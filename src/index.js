@@ -183,17 +183,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const rankIndex = rankForSeconds(profile.totalSeconds);
       const rank = RANKS[rankIndex] ?? 'Unranked';
       const level = rankIndex >= 0 ? `Level ${rankIndex + 1} — ${rank}` : 'Level 0 — Unranked';
-      const mostPlayed = profile.mostPlayed
-        ? `${escapeMarkdown(profile.mostPlayed.game_name)} — ${formatPlayTime(profile.mostPlayed.total_seconds)}`
-        : 'No game activity recorded yet';
+      const topGames = profile.topGames.length
+		? profile.topGames.map((game, index) => {
+			const medals = ['🥇', '🥈', '🥉'];
+			return `└ ${medals[index]} ${escapeMarkdown(game.game_name)} — **${formatPlayTime(game.total_seconds)}**`;
+		})
+		: ['└ No game activity recorded yet'];
       await interaction.reply([
         `🎮 __**${profileName}'s Gaming Profile**__`,
 		`⭐ **${level}**`,
 		'',
 		`⏱️ **Total playtime:** ${formatPlayTime(profile.totalSeconds)}`,
 		'',
-		'🏆 **Most played game**',
-		`└ ${mostPlayed}`,
+		'🏆 **Most played games**',
+		...topGames,
 		'',
 		'🎯 **This month**',
 		`└ ${formatPlayTime(profile.monthSeconds)}`,
@@ -224,9 +227,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.commandName === 'server') {
       const profile = db.getServerProfile(interaction.guild.id);
-      const mostPlayed = profile.mostPlayed
-        ? `${escapeMarkdown(profile.mostPlayed.game_name)} — ${formatPlayTime(profile.mostPlayed.total_seconds)}`
-        : 'No game activity recorded yet';
+      const topGames = profile.topGames.length
+  ? profile.topGames.map((game, index) => {
+      const medals = ['🥇', '🥈', '🥉'];
+      return `└ ${medals[index]} ${escapeMarkdown(game.game_name)} — **${formatPlayTime(game.total_seconds)}**`;
+    })
+  : ['└ No game activity recorded yet'];
       const activeMember = profile.mostActivePlayer
         ? await interaction.guild.members.fetch(profile.mostActivePlayer.user_id).catch(() => null)
         : null;
@@ -240,8 +246,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 		`🎮 **Total gaming time:** ${formatPlayTime(profile.totalSeconds)}`,
 		`🎮 **Games tracked:** ${profile.gamesTracked}`,
 		'',
-		'🏆 **Most played game**',
-		`└ ${mostPlayed}`,
+		'🏆 **Most played games**',
+		...topGames,
 		'',
 		'🔥 **Most active player**',
 		`└ ${mostActive}`,

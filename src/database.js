@@ -127,14 +127,24 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
         FROM play_sessions WHERE guild_id = ? AND user_id = ?
       `).get(monthStart, now, monthStart, guildId, userId).total_seconds
         + (active ? Math.max(0, Math.floor((now - Math.max(active.started_at, monthStart)) / 1000)) : 0);
-      const mostPlayed = db.prepare(`
-        SELECT game_name, SUM(total_seconds) AS total_seconds, SUM(session_count) AS session_count FROM (
-          SELECT game_name, total_seconds, session_count FROM game_stats WHERE guild_id = ? AND user_id = ?
-          UNION ALL
-          SELECT game_name, CAST(MAX(0, (? - started_at) / 1000) AS INTEGER), 0
-          FROM active_sessions WHERE guild_id = ? AND user_id = ?
-        ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT 1
-      `).get(guildId, userId, now, guildId, userId) ?? null;
+      const topGames = db.prepare(`
+		SELECT game_name, SUM(total_seconds) AS total_seconds
+		FROM (
+			SELECT game_name, total_seconds
+			FROM game_stats
+			WHERE guild_id = ? AND user_id = ?
+
+		UNION ALL
+
+			SELECT game_name,
+			CAST(MAX(0, (? - started_at) / 1000) AS INTEGER)
+			FROM active_sessions
+			WHERE guild_id = ? AND user_id = ?
+			)
+		GROUP BY game_name
+		ORDER BY total_seconds DESC
+		LIMIT 3
+`).all(guildId, userId, now, guildId, userId);
       const longest = db.prepare(`
         SELECT MAX(duration_seconds) AS duration_seconds FROM play_sessions WHERE guild_id = ? AND user_id = ?
       `).get(guildId, userId).duration_seconds ?? 0;
@@ -148,7 +158,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       return {
         totalSeconds,
         monthSeconds,
-        mostPlayed,
+        topGames,
         longestSeconds: Math.max(longest, activeDuration),
         gamesPlayed,
       };
@@ -167,14 +177,24 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
           UNION SELECT user_id FROM active_sessions WHERE guild_id = ?
         )
       `).get(guildId, guildId).count;
-      const mostPlayed = db.prepare(`
-        SELECT game_name, SUM(total_seconds) AS total_seconds FROM (
-          SELECT game_name, total_seconds FROM game_stats WHERE guild_id = ?
-          UNION ALL
-          SELECT game_name, CAST(MAX(0, (? - started_at) / 1000) AS INTEGER)
-          FROM active_sessions WHERE guild_id = ?
-        ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT 1
-      `).get(guildId, now, guildId) ?? null;
+      const topGames = db.prepare(`
+		SELECT game_name, SUM(total_seconds) AS total_seconds
+		FROM (
+			SELECT game_name, total_seconds
+			FROM game_stats
+			WHERE guild_id = ?
+
+			UNION ALL
+
+			SELECT game_name,
+				CAST(MAX(0, (? - started_at) / 1000) AS INTEGER)
+			FROM active_sessions
+			WHERE guild_id = ?
+		)
+		GROUP BY game_name
+		ORDER BY total_seconds DESC
+		LIMIT 3
+		`).all(guildId, now, guildId);
       const mostActivePlayer = db.prepare(`
         SELECT user_id, SUM(total_seconds) AS total_seconds FROM (
           SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
@@ -189,7 +209,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
           UNION SELECT game_name FROM active_sessions WHERE guild_id = ?
         )
       `).get(guildId, guildId).count;
-      return { trackedPlayers, totalSeconds, mostPlayed, mostActivePlayer, gamesTracked };
+      return { trackedPlayers, totalSeconds, topGames, mostActivePlayer, gamesTracked };
     },
     getNotificationChannel: (guildId) => getNotificationChannel.get(guildId)?.notification_channel_id ?? null,
     setNotificationChannel: (guildId, channelId) => setNotificationChannel.run(guildId, channelId),
