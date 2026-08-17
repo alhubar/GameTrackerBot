@@ -187,18 +187,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ? `${escapeMarkdown(profile.mostPlayed.game_name)} — ${formatPlayTime(profile.mostPlayed.total_seconds)}`
         : 'No game activity recorded yet';
       await interaction.reply([
-        `🎮 **${profileName}'s Gaming Profile**`,
-        level,
-        `**${formatPlayTime(profile.totalSeconds)}** total`,
-        '',
-        '🏆 **Most played**',
-        mostPlayed,
-        '🎯 **This month**',
-        formatPlayTime(profile.monthSeconds),
-        '🔥 **Longest session**',
-        formatPlayTime(profile.longestSeconds),
-        '🎮 **Games played**',
-        String(profile.gamesPlayed),
+        `🎮 __**${profileName}'s Gaming Profile**__`,
+		`⭐ **${level}**`,
+		'',
+		`⏱️ **Total playtime:** ${formatPlayTime(profile.totalSeconds)}`,
+		'',
+		'🏆 **Most played game**',
+		`└ ${mostPlayed}`,
+		'',
+		'🎯 **This month**',
+		`└ ${formatPlayTime(profile.monthSeconds)}`,
+		'',
+		'🔥 **Longest session**',
+		`└ ${formatPlayTime(profile.longestSeconds)}`,
+		'',
+		'🎮 **Games played**',
+		`└ ${profile.gamesPlayed}`,
       ].join('\n'));
     }
     if (interaction.commandName === 'leaderboard') {
@@ -232,15 +236,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply([
         '🏰 **Server Gaming Statistics**',
         '',
-        `👥 **Tracked players:** ${profile.trackedPlayers}`,
-        `🎮 **Total gaming time:** ${formatPlayTime(profile.totalSeconds)}`,
-        '',
-        '🏆 **Most played game:**',
-        mostPlayed,
-        '🔥 **Most active player:**',
-        mostActive,
-        `🎮 **Games tracked:** ${profile.gamesTracked}`,
-      ].join('\n'));
+		`👥 **Tracked players:** ${profile.trackedPlayers}`,
+		`🎮 **Total gaming time:** ${formatPlayTime(profile.totalSeconds)}`,
+		`🎮 **Games tracked:** ${profile.gamesTracked}`,
+		'',
+		'🏆 **Most played game**',
+		`└ ${mostPlayed}`,
+		'',
+		'🔥 **Most active player**',
+		`└ ${mostActive}`,
+	  ].join('\n'));
     }
     if (interaction.commandName === 'changes') {
       const channelName = process.env.CHANGES_CHANNEL?.trim();
