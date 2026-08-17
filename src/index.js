@@ -269,7 +269,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
       const title = release.name?.trim() || release.tag_name;
       const body = release.body?.trim() || 'No release notes were provided.';
-      const announcement = `📣 **${title}**\n${body}`;
+      const announcement = `📣 **New version ${release.tag_name} released!**\n${body}`;
       for (const message of splitDiscordMessage(announcement)) {
         await channel.send({ content: message, allowedMentions: { parse: [] } });
       }
