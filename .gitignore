@@ -14,3 +14,5 @@ livedbdatacopy/
 *.sqlite-wal
 *.sqlite-shm
 *.backup-*
+# systemd unit for the live host — contains machine-specific paths and the service account.
+gametracker.service

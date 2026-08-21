@@ -58,7 +58,7 @@ export const ACHIEVEMENTS = [
   { id: 'what_day_is_it', emoji: '🌅', name: 'What Day Is It?', description: 'Play a single session lasting 12+ hours.' },
 
   // Restarts and false starts — rapid stopping and starting.
-  { id: 'the_betrayal', emoji: '🗡️', name: 'The Betrayal', description: 'Quit a game within 5 minutes of starting it, then go straight into another.' },
+  { id: 'the_betrayal', emoji: '🗡️', name: 'The Betrayal', description: 'Quit a game within 1 minute of starting it, then go straight into another.' },
   { id: 'surely_not', emoji: '🙃', name: "I Can't Stop Playing", description: 'Play the same game 3 times in one day, at least 1 hour each time.' },
   { id: 'technical_difficulties', emoji: '🔌', name: 'Technical Difficulties', description: 'Start the same game 5+ times within 10 minutes.' },
 
@@ -72,7 +72,7 @@ export const ACHIEVEMENTS = [
   // Co-op — playing at the same time as other tracked members.
   { id: 'not_alone', emoji: '🤝', name: 'Not Alone', description: 'Play a game while another tracked member is playing it too.' },
   { id: 'herd_mentality', emoji: '🦅', name: 'Herd Mentality', description: 'Start a game within 1 minute of 3+ other members starting it.' },
-  { id: 'party_time', emoji: '🎉', name: 'Party Time', description: 'Play a game alongside 3+ other tracked members at once.' },
+  { id: 'party_time', emoji: '🎉', name: 'Party Time', description: 'Play a game alongside 4+ other tracked members at once.' },
   { id: 'duo', emoji: '👯', name: 'Duo', description: 'Play the same game alongside the same member on 5 different days.' },
   { id: 'squad_goals', emoji: '🛡️', name: 'Squad Goals', description: 'Play a game alongside 7+ other tracked members at once.' },
   { id: 'the_pack', emoji: '🐺', name: 'The Pack', description: 'Play a game alongside 11+ other tracked members at once.' },
@@ -104,13 +104,13 @@ const SHORT_SESSION_TIERS = [
 ];
 const SOCIAL_TIERS = [
   [2, 'not_alone'],
-  [4, 'party_time'],
+  [5, 'party_time'],
   [8, 'squad_goals'],
   [12, 'the_pack'],
 ];
 const WHALE_HOURS_SECONDS = 120 * 3600;
 const QUALIFYING_SESSION_SECONDS = 3600;
-const BETRAYAL_MAX_SECONDS = 300;
+const BETRAYAL_MAX_SECONDS = 60;
 const BETRAYAL_GRACE_MS = 2 * MINUTE;
 export const DUO_DAYS_NEEDED = 5;
 
@@ -140,15 +140,16 @@ function tryUnlock(db, guildId, userId, achievementId, now, unlocked) {
 }
 
 /** Call right after a member starts a new game session (session actually changed). */
-export function evaluateSessionStart(db, guildId, userId, gameName, now, previous) {
+export function evaluateSessionStart(db, guildId, userId, gameName, now) {
   const unlocked = [];
   const dayStart = dayStartUTC(now);
 
   const distinctGames = db.getDistinctGameCount(guildId, userId);
 
-  if (!previous && distinctGames === 1 && db.getTotalSeconds(guildId, userId) === 0) {
-    tryUnlock(db, guildId, userId, 'first_steps', now, unlocked);
-  }
+  // Fires on the first session the bot observes, not the member's first ever. Members who were
+  // being tracked before achievements shipped have playtime but no unlock row, and gating this on
+  // an empty history would mean they could never earn it.
+  tryUnlock(db, guildId, userId, 'first_steps', now, unlocked);
 
   if (distinctGames >= 10) tryUnlock(db, guildId, userId, 'collector', now, unlocked);
   if (distinctGames >= 25) tryUnlock(db, guildId, userId, 'game_hoarder', now, unlocked);

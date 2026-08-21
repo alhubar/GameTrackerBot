@@ -112,7 +112,8 @@ async function announceAchievements(member, achievementIds) {
       avatarUrl: member.displayAvatarURL(),
       percentOfPlayers: trackedPlayers ? Math.max(1, Math.round((unlockCount / trackedPlayers) * 100)) : 100,
     });
-    await channel.send({ embeds: [embed] }).catch((error) => console.error('Could not announce achievement:', error));
+    await channel.send({ content: `<@${member.id}>`, embeds: [embed] })
+      .catch((error) => console.error('Could not announce achievement:', error));
   }
 }
 
@@ -438,6 +439,19 @@ async function fetchLatestRelease(repository) {
   return response.json();
 }
 
+/** Drops a release body's own leading title line if it has one, so it never duplicates the
+ *  header this command already adds. Only strips a line that is bold end-to-end (e.g.
+ *  "**📣 Game Tracker v1.0.0**") — a line that merely starts with bold text is left alone,
+ *  so normal release notes are never touched by accident. */
+function stripLeadingTitleLine(body) {
+  const lines = body.split('\n');
+  if (lines[0] && /^\*\*.+\*\*$/.test(lines[0].trim())) {
+    lines.shift();
+    while (lines[0] === '') lines.shift();
+  }
+  return lines.join('\n');
+}
+
 async function syncRank(member) {
   if (member.user.bot) return;
   const total = db.getTotalSeconds(member.guild.id, member.id);
@@ -492,7 +506,7 @@ async function updateActivity(member, presence) {
       if (previous) {
         await announceAchievements(member, evaluateSessionEnd(db, member.guild.id, member.id, previous, now));
       }
-      await announceAchievements(member, evaluateSessionStart(db, member.guild.id, member.id, game, now, previous));
+      await announceAchievements(member, evaluateSessionStart(db, member.guild.id, member.id, game, now));
 
       for (const { userId, unlocked } of evaluateSocialTiers(db, member.guild.id, game, now)) {
         const target = userId === member.id ? member : await member.guild.members.fetch(userId).catch(() => null);
@@ -794,8 +808,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.reply({ content: 'The latest GitHub Release has already been announced. Use `/changes force:True` to post it again.', flags: MessageFlags.Ephemeral });
         return;
       }
-      const body = release.body?.trim() || 'No release notes were provided.';
-      const announcement = `📣 **New version ${release.tag_name} released!**\n${body}`;
+      const body = stripLeadingTitleLine(release.body?.trim() || 'No release notes were provided.');
+      const announcement = `📣 **New Game Tracker version ${release.tag_name} released!**\n${body}`;
       for (const message of splitDiscordMessage(announcement)) {
         await channel.send({ content: message, allowedMentions: { parse: [] } });
       }
