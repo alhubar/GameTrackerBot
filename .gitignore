@@ -2,3 +2,15 @@ node_modules/
 .env
 data/
 npm-debug.log*
+*.log
+test/
+# Local-only preview tools that post to a real Discord server. scripts/preflight-upgrade.js is
+# shipped, since it is read-only and useful to anyone upgrading an existing database.
+scripts/demo-*.js
+# Working draft for the GitHub Release body, not a repo document.
+CHANGELOG.md
+livedbdatacopy/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.backup-*

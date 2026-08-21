@@ -38,6 +38,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       ended_at INTEGER NOT NULL,
       duration_seconds INTEGER NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_play_sessions_guild_user_game ON play_sessions (guild_id, user_id, game_name);
     CREATE TABLE IF NOT EXISTS guild_settings (
       guild_id TEXT PRIMARY KEY,
       notification_channel_id TEXT,
@@ -49,6 +50,50 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       role_id TEXT NOT NULL,
       PRIMARY KEY (guild_id, rank_index)
     );
+    CREATE TABLE IF NOT EXISTS achievements_unlocked (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      achievement_id TEXT NOT NULL,
+      unlocked_at INTEGER NOT NULL,
+      PRIMARY KEY (guild_id, user_id, achievement_id)
+    );
+    CREATE TABLE IF NOT EXISTS duo_days (
+      guild_id TEXT NOT NULL,
+      user_id_a TEXT NOT NULL,
+      user_id_b TEXT NOT NULL,
+      day TEXT NOT NULL,
+      PRIMARY KEY (guild_id, user_id_a, user_id_b, day)
+    );
+    CREATE TABLE IF NOT EXISTS server_achievements_unlocked (
+      guild_id TEXT NOT NULL,
+      achievement_id TEXT NOT NULL,
+      unlocked_at INTEGER NOT NULL,
+      PRIMARY KEY (guild_id, achievement_id)
+    );
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      message_id TEXT,
+      creator_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      game_name TEXT,
+      starts_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS event_signups (
+      event_id INTEGER NOT NULL,
+      user_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      PRIMARY KEY (event_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS event_reminders_sent (
+      event_id INTEGER NOT NULL,
+      stage_minutes INTEGER NOT NULL,
+      sent_at INTEGER NOT NULL,
+      PRIMARY KEY (event_id, stage_minutes)
+    );
   `);
   const activeSessionColumns = db.prepare('PRAGMA table_info(active_sessions)').all();
   if (!activeSessionColumns.some((column) => column.name === 'last_checkpoint_at')) {
@@ -57,6 +102,13 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   const guildSettingsColumns = db.prepare('PRAGMA table_info(guild_settings)').all();
   if (!guildSettingsColumns.some((column) => column.name === 'last_announced_release_id')) {
     db.exec('ALTER TABLE guild_settings ADD COLUMN last_announced_release_id TEXT');
+  }
+  if (!guildSettingsColumns.some((column) => column.name === 'last_monthly_recap')) {
+    db.exec('ALTER TABLE guild_settings ADD COLUMN last_monthly_recap TEXT');
+  }
+  const eventColumns = db.prepare('PRAGMA table_info(events)').all();
+  if (!eventColumns.some((column) => column.name === 'message_id')) {
+    db.exec('ALTER TABLE events ADD COLUMN message_id TEXT');
   }
   db.exec('UPDATE active_sessions SET last_checkpoint_at = started_at WHERE last_checkpoint_at IS NULL');
 
@@ -72,10 +124,17 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   `);
   const resetSessionCheckpoint = db.prepare('UPDATE active_sessions SET last_checkpoint_at = ? WHERE guild_id = ? AND user_id = ?');
   const removeSession = db.prepare('DELETE FROM active_sessions WHERE guild_id = ? AND user_id = ?');
-  const addGameTime = db.prepare(`
-    INSERT INTO game_stats (guild_id, user_id, game_name, total_seconds, session_count) VALUES (?, ?, ?, ?, 1)
+  // Per-game time and the session tally are bumped separately: time accrues at every checkpoint so
+  // an interrupted session still leaves its playtime attributed to the right game, while the tally
+  // only moves when a session actually finishes.
+  const addGameSeconds = db.prepare(`
+    INSERT INTO game_stats (guild_id, user_id, game_name, total_seconds, session_count) VALUES (?, ?, ?, ?, 0)
     ON CONFLICT(guild_id, user_id, game_name) DO UPDATE SET
-      total_seconds = total_seconds + excluded.total_seconds,
+      total_seconds = total_seconds + excluded.total_seconds
+  `);
+  const bumpGameSessionCount = db.prepare(`
+    INSERT INTO game_stats (guild_id, user_id, game_name, total_seconds, session_count) VALUES (?, ?, ?, 0, 1)
+    ON CONFLICT(guild_id, user_id, game_name) DO UPDATE SET
       session_count = session_count + 1
   `);
   const saveCompletedSession = db.prepare(`
@@ -92,34 +151,238 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     INSERT INTO guild_settings (guild_id, last_announced_release_id) VALUES (?, ?)
     ON CONFLICT(guild_id) DO UPDATE SET last_announced_release_id = excluded.last_announced_release_id
   `);
+  const getLastMonthlyRecapStmt = db.prepare('SELECT last_monthly_recap FROM guild_settings WHERE guild_id = ?');
+  const setLastMonthlyRecapStmt = db.prepare(`
+    INSERT INTO guild_settings (guild_id, last_monthly_recap) VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET last_monthly_recap = excluded.last_monthly_recap
+  `);
   const getRankRoles = db.prepare('SELECT rank_index, role_id FROM rank_roles WHERE guild_id = ? ORDER BY rank_index');
   const saveRankRole = db.prepare(`
     INSERT INTO rank_roles (guild_id, rank_index, role_id) VALUES (?, ?, ?)
     ON CONFLICT(guild_id, rank_index) DO UPDATE SET role_id = excluded.role_id
   `);
+  const countTrackedPlayersStmt = db.prepare(`
+    SELECT COUNT(DISTINCT user_id) AS count FROM (
+      SELECT user_id FROM member_stats WHERE guild_id = ?
+      UNION SELECT user_id FROM active_sessions WHERE guild_id = ?
+    )
+  `);
+
+  // Achievements
+  const hasAchievementStmt = db.prepare('SELECT 1 FROM achievements_unlocked WHERE guild_id = ? AND user_id = ? AND achievement_id = ?');
+  const unlockAchievementStmt = db.prepare(`
+    INSERT OR IGNORE INTO achievements_unlocked (guild_id, user_id, achievement_id, unlocked_at) VALUES (?, ?, ?, ?)
+  `);
+  const getPlayerAchievementsStmt = db.prepare('SELECT achievement_id, unlocked_at FROM achievements_unlocked WHERE guild_id = ? AND user_id = ? ORDER BY unlocked_at');
+  const getAchievementUnlockCountStmt = db.prepare('SELECT COUNT(*) AS count FROM achievements_unlocked WHERE guild_id = ? AND achievement_id = ?');
+  const getDistinctGameCountStmt = db.prepare(`
+    SELECT COUNT(DISTINCT game_name) AS count FROM (
+      SELECT game_name FROM game_stats WHERE guild_id = ? AND user_id = ?
+      UNION SELECT game_name FROM active_sessions WHERE guild_id = ? AND user_id = ?
+    )
+  `);
+  const getGamesTouchedSinceStmt = db.prepare(`
+    SELECT COUNT(DISTINCT game_name) AS count FROM (
+      SELECT game_name FROM play_sessions WHERE guild_id = ? AND user_id = ? AND started_at >= ?
+      UNION SELECT game_name FROM active_sessions WHERE guild_id = ? AND user_id = ? AND started_at >= ?
+    )
+  `);
+  const getGameStartCountSinceStmt = db.prepare(`
+    SELECT COUNT(*) AS count FROM (
+      SELECT started_at FROM play_sessions
+      WHERE guild_id = ? AND user_id = ? AND game_name = ? AND started_at >= ?
+      UNION ALL SELECT started_at FROM active_sessions
+      WHERE guild_id = ? AND user_id = ? AND game_name = ? AND started_at >= ?
+    )
+  `);
+  const getLastCompletedSessionStmt = db.prepare(`
+    SELECT game_name, started_at, ended_at, duration_seconds FROM play_sessions
+    WHERE guild_id = ? AND user_id = ? ORDER BY ended_at DESC LIMIT 1
+  `);
+  const getQualifyingSessionCountTodayStmt = db.prepare(`
+    SELECT COUNT(*) AS count FROM play_sessions
+    WHERE guild_id = ? AND user_id = ? AND game_name = ? AND started_at >= ? AND duration_seconds >= ?
+  `);
+  const getDistinctDaysForGameStmt = db.prepare(`
+    SELECT COUNT(DISTINCT day) AS count FROM (
+      SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') AS day FROM play_sessions WHERE guild_id = ? AND user_id = ? AND game_name = ?
+      UNION SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') FROM active_sessions WHERE guild_id = ? AND user_id = ? AND game_name = ?
+    )
+  `);
+  const getDistinctDaysAnyGameStmt = db.prepare(`
+    SELECT COUNT(DISTINCT day) AS count FROM (
+      SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') AS day FROM play_sessions WHERE guild_id = ? AND user_id = ?
+      UNION SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') FROM active_sessions WHERE guild_id = ? AND user_id = ?
+    )
+  `);
+  const getPlayDatesStmt = db.prepare(`
+    SELECT DISTINCT day FROM (
+      SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') AS day FROM play_sessions WHERE guild_id = ? AND user_id = ?
+      UNION SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') FROM active_sessions WHERE guild_id = ? AND user_id = ?
+    ) ORDER BY day DESC
+  `);
+  const getLastSessionEndForGameStmt = db.prepare(`
+    SELECT MAX(ended_at) AS ended_at FROM play_sessions WHERE guild_id = ? AND user_id = ? AND game_name = ?
+  `);
+  const getShortGameCountTodayStmt = db.prepare(`
+    SELECT COUNT(DISTINCT game_name) AS count FROM play_sessions
+    WHERE guild_id = ? AND user_id = ? AND started_at >= ? AND duration_seconds < ?
+  `);
+  const getActiveUsersForGameStmt = db.prepare('SELECT user_id, started_at FROM active_sessions WHERE guild_id = ? AND game_name = ?');
+  const getInactivePlayersStmt = db.prepare(`
+    SELECT user_id, MAX(ended_at) AS last_ended FROM play_sessions
+    WHERE guild_id = ? AND user_id NOT IN (SELECT user_id FROM active_sessions WHERE guild_id = ?)
+    GROUP BY user_id HAVING last_ended < ?
+  `);
+  // "Has this game ever been seen on this server before now?" — deliberately includes the asking
+  // member's own past, so a game they have been playing for weeks is not treated as a discovery.
+  // Their own in-flight session is excluded, since it was created moments before this is asked.
+  const getGameHistoryStmt = db.prepare(`
+    SELECT 1 FROM (
+      SELECT user_id FROM game_stats WHERE guild_id = ? AND game_name = ?
+      UNION SELECT user_id FROM play_sessions WHERE guild_id = ? AND game_name = ?
+      UNION SELECT user_id FROM active_sessions WHERE guild_id = ? AND game_name = ? AND user_id != ?
+    ) LIMIT 1
+  `);
+  const getLastSessionEndAnyStmt = db.prepare('SELECT MAX(ended_at) AS ended_at FROM play_sessions WHERE guild_id = ? AND user_id = ?');
+  const getGameStatsTotalStmt = db.prepare('SELECT total_seconds FROM game_stats WHERE guild_id = ? AND user_id = ? AND game_name = ?');
+  const getGameSessionCountStmt = db.prepare('SELECT session_count FROM game_stats WHERE guild_id = ? AND user_id = ? AND game_name = ?');
+  const recordDuoDayStmt = db.prepare('INSERT OR IGNORE INTO duo_days (guild_id, user_id_a, user_id_b, day) VALUES (?, ?, ?, ?)');
+  const getDuoDayCountStmt = db.prepare('SELECT COUNT(*) AS count FROM duo_days WHERE guild_id = ? AND user_id_a = ? AND user_id_b = ?');
+
+  // Server-wide (guild-scoped, one-time) achievements
+  const hasServerAchievementStmt = db.prepare('SELECT 1 FROM server_achievements_unlocked WHERE guild_id = ? AND achievement_id = ?');
+  const unlockServerAchievementStmt = db.prepare(`
+    INSERT OR IGNORE INTO server_achievements_unlocked (guild_id, achievement_id, unlocked_at) VALUES (?, ?, ?)
+  `);
+  const getServerAchievementsStmt = db.prepare('SELECT achievement_id, unlocked_at FROM server_achievements_unlocked WHERE guild_id = ? ORDER BY unlocked_at');
+  const getGuildGameCountStmt = db.prepare(`
+    SELECT COUNT(DISTINCT game_name) AS count FROM (
+      SELECT game_name FROM game_stats WHERE guild_id = ?
+      UNION SELECT game_name FROM active_sessions WHERE guild_id = ?
+    )
+  `);
+  const getGuildBaseSecondsStmt = db.prepare('SELECT COALESCE(SUM(total_seconds), 0) AS total_seconds FROM member_stats WHERE guild_id = ?');
+  const getGuildActiveSecondsStmt = db.prepare(`
+    SELECT COALESCE(SUM(CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)), 0) AS total_seconds
+    FROM active_sessions WHERE guild_id = ?
+  `);
+  const getTopGameByHoursStmt = db.prepare(`
+    SELECT game_name, SUM(total_seconds) AS total_seconds FROM (
+      SELECT game_name, total_seconds FROM game_stats WHERE guild_id = ?
+      UNION ALL
+      SELECT game_name, CAST(MAX(0, (? - started_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
+    ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT 1
+  `);
+  const getTopGameByPlayerCountStmt = db.prepare(`
+    SELECT game_name, COUNT(DISTINCT user_id) AS players FROM (
+      SELECT user_id, game_name FROM game_stats WHERE guild_id = ?
+      UNION SELECT user_id, game_name FROM active_sessions WHERE guild_id = ?
+    ) GROUP BY game_name ORDER BY players DESC LIMIT 1
+  `);
+  const getConcurrentGameCountStmt = db.prepare('SELECT COUNT(DISTINCT game_name) AS count FROM active_sessions WHERE guild_id = ?');
+  const getPlayersAboveSecondsStmt = db.prepare('SELECT COUNT(*) AS count FROM member_stats WHERE guild_id = ? AND total_seconds >= ?');
+  const getGuildGamesTodayStmt = db.prepare(`
+    SELECT COUNT(DISTINCT game_name) AS count FROM (
+      SELECT game_name FROM play_sessions WHERE guild_id = ? AND started_at >= ?
+      UNION SELECT game_name FROM active_sessions WHERE guild_id = ? AND started_at >= ?
+    )
+  `);
+  const getGuildPlayDatesStmt = db.prepare(`
+    SELECT DISTINCT day FROM (
+      SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') AS day FROM play_sessions WHERE guild_id = ?
+      UNION SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') FROM active_sessions WHERE guild_id = ?
+    ) ORDER BY day DESC
+  `);
+  const getTotalAchievementUnlockCountStmt = db.prepare('SELECT COUNT(*) AS count FROM achievements_unlocked WHERE guild_id = ?');
+  const getAllMemberTotalsStmt = db.prepare(`
+    SELECT user_id, SUM(total_seconds) AS total_seconds FROM (
+      SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
+      UNION ALL
+      SELECT user_id, CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
+    ) GROUP BY user_id
+  `);
+  const getQualifiedDuoPairCountStmt = db.prepare(`
+    SELECT COUNT(*) AS count FROM (
+      SELECT user_id_a, user_id_b FROM duo_days WHERE guild_id = ? GROUP BY user_id_a, user_id_b HAVING COUNT(*) >= ?
+    )
+  `);
+
+  // Events
+  const createEventStmt = db.prepare(`
+    INSERT INTO events (guild_id, channel_id, creator_id, title, description, game_name, starts_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const getEventStmt = db.prepare('SELECT * FROM events WHERE id = ?');
+  const setEventMessageIdStmt = db.prepare('UPDATE events SET message_id = ? WHERE id = ?');
+  const updateEventStmt = db.prepare(`
+    UPDATE events SET title = ?, description = ?, game_name = ?, starts_at = ? WHERE id = ?
+  `);
+  const deleteEventStmt = db.prepare('DELETE FROM events WHERE id = ?');
+  const deleteEventSignupsStmt = db.prepare('DELETE FROM event_signups WHERE event_id = ?');
+  const deleteEventRemindersStmt = db.prepare('DELETE FROM event_reminders_sent WHERE event_id = ?');
+  const upsertEventSignupStmt = db.prepare(`
+    INSERT INTO event_signups (event_id, user_id, status) VALUES (?, ?, ?)
+    ON CONFLICT(event_id, user_id) DO UPDATE SET status = excluded.status
+  `);
+  const getEventSignupsStmt = db.prepare('SELECT user_id, status FROM event_signups WHERE event_id = ?');
+  const getUpcomingEventsStmt = db.prepare('SELECT * FROM events WHERE starts_at > ? ORDER BY starts_at');
+  const getUpcomingEventsForGuildStmt = db.prepare('SELECT * FROM events WHERE guild_id = ? AND starts_at > ? ORDER BY starts_at LIMIT ?');
+  const getStaleEventsStmt = db.prepare('SELECT id FROM events WHERE starts_at < ?');
+  const hasReminderSentStmt = db.prepare('SELECT 1 FROM event_reminders_sent WHERE event_id = ? AND stage_minutes = ?');
+  const getLastReminderSentAtStmt = db.prepare('SELECT MAX(sent_at) AS last FROM event_reminders_sent WHERE event_id = ?');
+  const markReminderSentStmt = db.prepare(`
+    INSERT OR IGNORE INTO event_reminders_sent (event_id, stage_minutes, sent_at) VALUES (?, ?, ?)
+  `);
 
   function closeSession(guildId, userId, now = Date.now()) {
     const session = getSession.get(guildId, userId);
-    if (!session) return 0;
+    if (!session) return null;
+    // Only the slice since the last checkpoint is new; everything before it was already banked by
+    // checkpointAll into both member_stats and game_stats.
     const unrecordedSeconds = Math.max(0, Math.floor((now - session.last_checkpoint_at) / 1000));
-    if (unrecordedSeconds) addTime.run(guildId, userId, unrecordedSeconds);
+    if (unrecordedSeconds) {
+      addTime.run(guildId, userId, unrecordedSeconds);
+      addGameSeconds.run(guildId, userId, session.game_name, unrecordedSeconds);
+    }
     const totalSeconds = Math.max(0, Math.floor((now - session.started_at) / 1000));
+    let completed = null;
     if (totalSeconds) {
-      addGameTime.run(guildId, userId, session.game_name, totalSeconds);
+      bumpGameSessionCount.run(guildId, userId, session.game_name);
       saveCompletedSession.run(guildId, userId, session.game_name, session.started_at, now, totalSeconds);
+      completed = { gameName: session.game_name, startedAt: session.started_at, endedAt: now, durationSeconds: totalSeconds };
     }
     removeSession.run(guildId, userId);
-    return unrecordedSeconds;
+    return completed;
+  }
+
+  /**
+   * Closes sessions left behind by an unclean exit (crash, kill, reboot — anything that skips the
+   * SIGINT flush). They are closed as of their last checkpoint rather than now, because the bot has
+   * no idea whether the member kept playing while it was down; billing that gap as playtime would
+   * inflate every total. Anyone still playing gets a fresh session once presences are read.
+   * Returns the number of sessions recovered.
+   */
+  function recoverStaleSessions() {
+    const stale = db.prepare('SELECT guild_id, user_id, last_checkpoint_at FROM active_sessions').all();
+    for (const session of stale) closeSession(session.guild_id, session.user_id, session.last_checkpoint_at);
+    return stale.length;
+  }
+
+  const recoveredSessions = recoverStaleSessions();
+  if (recoveredSessions) {
+    console.log(`Recovered ${recoveredSessions} session(s) left open by a previous unclean shutdown.`);
   }
 
   return {
+    recoverStaleSessions,
     getTotalSeconds: (guildId, userId) => getStats.get(guildId, userId)?.total_seconds ?? 0,
-    getPlayerProfile(guildId, userId, now = Date.now()) {
+    getPlayerProfile(guildId, userId, now = Date.now(), topGamesLimit = 3) {
       const active = getSession.get(guildId, userId);
       const activeSeconds = active ? Math.max(0, Math.floor((now - active.last_checkpoint_at) / 1000)) : 0;
       const totalSeconds = (getStats.get(guildId, userId)?.total_seconds ?? 0) + activeSeconds;
       const nowDate = new Date(now);
-      const monthStart = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).getTime();
+      const monthStart = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1);
       const monthSeconds = db.prepare(`
         SELECT COALESCE(SUM(CASE WHEN ended_at > ? THEN
           CAST((MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
@@ -143,7 +406,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 			)
 		GROUP BY game_name
 		ORDER BY total_seconds DESC
-		LIMIT 3
+		LIMIT ${Math.max(1, Math.floor(topGamesLimit))}
 `).all(guildId, userId, now, guildId, userId);
       const longest = db.prepare(`
         SELECT MAX(duration_seconds) AS duration_seconds FROM play_sessions WHERE guild_id = ? AND user_id = ?
@@ -171,12 +434,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       const totalSeconds = (db.prepare(`
         SELECT COALESCE(SUM(total_seconds), 0) AS total_seconds FROM member_stats WHERE guild_id = ?
       `).get(guildId).total_seconds) + activeSeconds;
-      const trackedPlayers = db.prepare(`
-        SELECT COUNT(DISTINCT user_id) AS count FROM (
-          SELECT user_id FROM member_stats WHERE guild_id = ?
-          UNION SELECT user_id FROM active_sessions WHERE guild_id = ?
-        )
-      `).get(guildId, guildId).count;
+      const trackedPlayers = countTrackedPlayersStmt.get(guildId, guildId).count;
       const topGames = db.prepare(`
 		SELECT game_name, SUM(total_seconds) AS total_seconds
 		FROM (
@@ -195,21 +453,21 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 		ORDER BY total_seconds DESC
 		LIMIT 3
 		`).all(guildId, now, guildId);
-      const mostActivePlayer = db.prepare(`
+      const topPlayers = db.prepare(`
         SELECT user_id, SUM(total_seconds) AS total_seconds FROM (
           SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
           UNION ALL
           SELECT user_id, CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)
           FROM active_sessions WHERE guild_id = ?
-        ) GROUP BY user_id ORDER BY total_seconds DESC LIMIT 1
-      `).get(guildId, now, guildId) ?? null;
+        ) GROUP BY user_id ORDER BY total_seconds DESC LIMIT 3
+      `).all(guildId, now, guildId);
       const gamesTracked = db.prepare(`
         SELECT COUNT(DISTINCT game_name) AS count FROM (
           SELECT game_name FROM game_stats WHERE guild_id = ?
           UNION SELECT game_name FROM active_sessions WHERE guild_id = ?
         )
       `).get(guildId, guildId).count;
-      return { trackedPlayers, totalSeconds, topGames, mostActivePlayer, gamesTracked };
+      return { trackedPlayers, totalSeconds, topGames, topPlayers, gamesTracked };
     },
     getNotificationChannel: (guildId) => getNotificationChannel.get(guildId)?.notification_channel_id ?? null,
     setNotificationChannel: (guildId, channelId) => setNotificationChannel.run(guildId, channelId),
@@ -221,22 +479,36 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
       ORDER BY total_seconds DESC LIMIT ?
     `).all(guildId, limit),
+    getMonthlyLeaderboard: (guildId, monthStart, now = Date.now(), limit = 10) => db.prepare(`
+      SELECT user_id, COALESCE(SUM(CASE WHEN ended_at > ? THEN
+        CAST((MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
+        ELSE 0 END), 0) AS total_seconds
+      FROM play_sessions WHERE guild_id = ?
+      GROUP BY user_id
+      HAVING total_seconds > 0
+      ORDER BY total_seconds DESC LIMIT ?
+    `).all(monthStart, now, monthStart, guildId, limit),
     startSession(guildId, userId, gameName, now = Date.now()) {
       const existing = getSession.get(guildId, userId);
-      if (existing?.game_name === gameName) return false;
-      closeSession(guildId, userId, now);
+      if (existing?.game_name === gameName) return { changed: false, previous: null };
+      const previous = closeSession(guildId, userId, now);
       createSession.run(guildId, userId, gameName, now, now);
-      return true;
+      return { changed: true, previous };
     },
-    stopSession: closeSession,
+    stopSession: (guildId, userId, now = Date.now()) => closeSession(guildId, userId, now),
     checkpointAll(now = Date.now()) {
       const sessions = db.prepare('SELECT guild_id, user_id FROM active_sessions').all();
       for (const session of sessions) {
         const active = getSession.get(session.guild_id, session.user_id);
         const seconds = Math.max(0, Math.floor((now - active.last_checkpoint_at) / 1000));
-        if (seconds) addTime.run(session.guild_id, session.user_id, seconds);
+        if (seconds) {
+          addTime.run(session.guild_id, session.user_id, seconds);
+          addGameSeconds.run(session.guild_id, session.user_id, active.game_name, seconds);
+        }
         resetSessionCheckpoint.run(now, session.guild_id, session.user_id);
         session.elapsed_seconds = seconds;
+        session.game_name = active.game_name;
+        session.started_at = active.started_at;
       }
       return sessions;
     },
@@ -246,5 +518,104 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       return sessions;
     },
     close: () => db.close(),
+
+    // Achievements
+    hasAchievement: (guildId, userId, achievementId) => !!hasAchievementStmt.get(guildId, userId, achievementId),
+    unlockAchievement: (guildId, userId, achievementId, now = Date.now()) =>
+      unlockAchievementStmt.run(guildId, userId, achievementId, now).changes === 1,
+    getPlayerAchievements: (guildId, userId) => getPlayerAchievementsStmt.all(guildId, userId),
+    getAchievementUnlockCount: (guildId, achievementId) => getAchievementUnlockCountStmt.get(guildId, achievementId).count,
+    getTrackedPlayerCount: (guildId) => countTrackedPlayersStmt.get(guildId, guildId).count,
+    getDistinctGameCount: (guildId, userId) => getDistinctGameCountStmt.get(guildId, userId, guildId, userId).count,
+    getGamesTouchedSince: (guildId, userId, sinceMs) =>
+      getGamesTouchedSinceStmt.get(guildId, userId, sinceMs, guildId, userId, sinceMs).count,
+    getGameStartCountSince: (guildId, userId, gameName, sinceMs) =>
+      getGameStartCountSinceStmt.get(guildId, userId, gameName, sinceMs, guildId, userId, gameName, sinceMs).count,
+    getLastCompletedSession: (guildId, userId) => getLastCompletedSessionStmt.get(guildId, userId) ?? null,
+    getQualifyingSessionCountToday: (guildId, userId, gameName, dayStartMs, minDurationSeconds) =>
+      getQualifyingSessionCountTodayStmt.get(guildId, userId, gameName, dayStartMs, minDurationSeconds).count,
+    getDistinctDaysForGame: (guildId, userId, gameName) =>
+      getDistinctDaysForGameStmt.get(guildId, userId, gameName, guildId, userId, gameName).count,
+    getDistinctDaysAnyGame: (guildId, userId) => getDistinctDaysAnyGameStmt.get(guildId, userId, guildId, userId).count,
+    getPlayDates: (guildId, userId) => getPlayDatesStmt.all(guildId, userId, guildId, userId).map((row) => row.day),
+    getLastSessionEndForGame: (guildId, userId, gameName) =>
+      getLastSessionEndForGameStmt.get(guildId, userId, gameName).ended_at ?? null,
+    getShortGameCountToday: (guildId, userId, sinceMs, underSeconds) =>
+      getShortGameCountTodayStmt.get(guildId, userId, sinceMs, underSeconds).count,
+    getActiveUsersForGame: (guildId, gameName) => getActiveUsersForGameStmt.all(guildId, gameName),
+    getInactivePlayers: (guildId, cutoffMs) => getInactivePlayersStmt.all(guildId, guildId, cutoffMs),
+    hasGameBeenPlayedBefore: (guildId, gameName, currentUserId) =>
+      !!getGameHistoryStmt.get(guildId, gameName, guildId, gameName, guildId, gameName, currentUserId),
+    getLastSessionEndAny: (guildId, userId) => getLastSessionEndAnyStmt.get(guildId, userId).ended_at ?? null,
+    getGameStatsTotal: (guildId, userId, gameName) => getGameStatsTotalStmt.get(guildId, userId, gameName)?.total_seconds ?? 0,
+    getGameSessionCount: (guildId, userId, gameName) => getGameSessionCountStmt.get(guildId, userId, gameName)?.session_count ?? 0,
+
+    // Monthly recap. All three clamp sessions to the window so a session straddling the month
+    // boundary only counts the part that actually falls inside it, matching getMonthlyLeaderboard.
+    getMonthlyTopGame: (guildId, userId, fromMs, toMs) => db.prepare(`
+      SELECT game_name, SUM(CAST((MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)) AS total_seconds
+      FROM play_sessions
+      WHERE guild_id = ? AND user_id = ? AND ended_at > ? AND started_at < ?
+      GROUP BY game_name HAVING total_seconds > 0
+      ORDER BY total_seconds DESC LIMIT 1
+    `).get(toMs, fromMs, guildId, userId, fromMs, toMs) ?? null,
+    getMonthlyGameCount: (guildId, userId, fromMs, toMs) => db.prepare(`
+      SELECT COUNT(DISTINCT game_name) AS count FROM play_sessions
+      WHERE guild_id = ? AND user_id = ? AND ended_at > ? AND started_at < ?
+    `).get(guildId, userId, fromMs, toMs).count,
+    getAchievementsUnlockedBetween: (guildId, userId, fromMs, toMs) => db.prepare(`
+      SELECT achievement_id FROM achievements_unlocked
+      WHERE guild_id = ? AND user_id = ? AND unlocked_at >= ? AND unlocked_at < ?
+      ORDER BY unlocked_at
+    `).all(guildId, userId, fromMs, toMs).map((row) => row.achievement_id),
+    getLastMonthlyRecap: (guildId) => getLastMonthlyRecapStmt.get(guildId)?.last_monthly_recap ?? null,
+    setLastMonthlyRecap: (guildId, monthKey) => setLastMonthlyRecapStmt.run(guildId, monthKey),
+    recordDuoDay: (guildId, userIdA, userIdB, day) => recordDuoDayStmt.run(guildId, userIdA, userIdB, day),
+    getDuoDayCount: (guildId, userIdA, userIdB) => getDuoDayCountStmt.get(guildId, userIdA, userIdB).count,
+
+    hasServerAchievement: (guildId, achievementId) => !!hasServerAchievementStmt.get(guildId, achievementId),
+    unlockServerAchievement: (guildId, achievementId, now = Date.now()) =>
+      unlockServerAchievementStmt.run(guildId, achievementId, now).changes === 1,
+    getServerAchievements: (guildId) => getServerAchievementsStmt.all(guildId),
+    getGuildGameCount: (guildId) => getGuildGameCountStmt.get(guildId, guildId).count,
+    getGuildTotalSeconds: (guildId, now = Date.now()) =>
+      getGuildBaseSecondsStmt.get(guildId).total_seconds + getGuildActiveSecondsStmt.get(now, guildId).total_seconds,
+    getTopGameByHours: (guildId, now = Date.now()) => getTopGameByHoursStmt.get(guildId, now, guildId) ?? null,
+    getTopGameByPlayerCount: (guildId) => getTopGameByPlayerCountStmt.get(guildId, guildId) ?? null,
+    getConcurrentGameCount: (guildId) => getConcurrentGameCountStmt.get(guildId).count,
+    getPlayersAboveSeconds: (guildId, thresholdSeconds) => getPlayersAboveSecondsStmt.get(guildId, thresholdSeconds).count,
+    getGuildGamesToday: (guildId, dayStartMs) => getGuildGamesTodayStmt.get(guildId, dayStartMs, guildId, dayStartMs).count,
+    getGuildPlayDates: (guildId) => getGuildPlayDatesStmt.all(guildId, guildId).map((row) => row.day),
+    getTotalAchievementUnlockCount: (guildId) => getTotalAchievementUnlockCountStmt.get(guildId).count,
+    getAllMemberTotals: (guildId, now = Date.now()) => getAllMemberTotalsStmt.all(guildId, now, guildId),
+    getQualifiedDuoPairCount: (guildId, daysNeeded) => getQualifiedDuoPairCountStmt.get(guildId, daysNeeded).count,
+
+    createEvent: (guildId, channelId, creatorId, title, description, gameName, startsAt, now = Date.now()) =>
+      createEventStmt.run(guildId, channelId, creatorId, title, description, gameName, startsAt, now).lastInsertRowid,
+    getEvent: (eventId) => getEventStmt.get(eventId) ?? null,
+    setEventMessageId: (eventId, messageId) => setEventMessageIdStmt.run(messageId, eventId),
+    updateEvent(eventId, title, description, gameName, startsAt) {
+      const existing = getEventStmt.get(eventId);
+      updateEventStmt.run(title, description, gameName, startsAt, eventId);
+      // Only reset which reminder stages have fired if the start time actually moved —
+      // otherwise an already-sent reminder would immediately re-fire on the next tick.
+      if (existing && existing.starts_at !== startsAt) deleteEventRemindersStmt.run(eventId);
+    },
+    deleteEvent(eventId) {
+      const remove = db.transaction((id) => {
+        deleteEventSignupsStmt.run(id);
+        deleteEventRemindersStmt.run(id);
+        deleteEventStmt.run(id);
+      });
+      remove(eventId);
+    },
+    upsertEventSignup: (eventId, userId, status) => upsertEventSignupStmt.run(eventId, userId, status),
+    getEventSignups: (eventId) => getEventSignupsStmt.all(eventId),
+    getUpcomingEvents: (afterMs) => getUpcomingEventsStmt.all(afterMs),
+    getUpcomingEventsForGuild: (guildId, afterMs, limit = 10) => getUpcomingEventsForGuildStmt.all(guildId, afterMs, limit),
+    getStaleEvents: (beforeMs) => getStaleEventsStmt.all(beforeMs).map((row) => row.id),
+    hasReminderSent: (eventId, stageMinutes) => !!hasReminderSentStmt.get(eventId, stageMinutes),
+    getLastReminderSentAt: (eventId) => getLastReminderSentAtStmt.get(eventId).last ?? null,
+    markReminderSent: (eventId, stageMinutes, now = Date.now()) => markReminderSentStmt.run(eventId, stageMinutes, now),
   };
 }
