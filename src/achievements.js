@@ -55,7 +55,7 @@ export const ACHIEVEMENTS = [
   { id: 'just_one_more_game', emoji: '🎮', name: 'Just One More Game', description: 'Play a single session lasting 3+ hours.' },
   { id: 'should_go_to_bed', emoji: '😴', name: 'I Should Probably Go To Bed', description: 'Play a single session lasting 5+ hours.' },
   { id: 'sleep_is_optional', emoji: '🌙', name: 'Sleep Is Optional', description: 'Play a single session lasting 8+ hours.' },
-  { id: 'what_day_is_it', emoji: '🌅', name: 'What Day Is It?', description: 'Play a single session lasting 12+ hours.' },
+  { id: 'what_day_is_it', emoji: '🌅', name: 'What Day Is It?', description: 'Play a single session lasting 11+ hours.' },
 
   // Restarts and false starts — rapid stopping and starting.
   { id: 'the_betrayal', emoji: '🗡️', name: 'The Betrayal', description: 'Quit a game within 1 minute of starting it, then go straight into another.' },
@@ -97,7 +97,7 @@ const SESSION_LENGTH_TIERS = [
   [3 * HOUR, 'just_one_more_game'],
   [5 * HOUR, 'should_go_to_bed'],
   [8 * HOUR, 'sleep_is_optional'],
-  [12 * HOUR, 'what_day_is_it'],
+  [11 * HOUR, 'what_day_is_it'],
 ];
 const SHORT_SESSION_TIERS = [
   [30_000, 'wrong_game'],
