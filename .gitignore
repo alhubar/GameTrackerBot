@@ -16,3 +16,4 @@ livedbdatacopy/
 *.backup-*
 # systemd unit for the live host — contains machine-specific paths and the service account.
 gametracker.service
+CLAUDE.md

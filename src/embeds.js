@@ -15,7 +15,7 @@ export function buildAchievementEmbed(achievement, { displayName, avatarUrl, per
     .setAuthor({ name: `${displayName} unlocked an achievement!` })
     .setTitle(`${achievement.emoji} ${achievement.name}`)
     .setDescription(achievement.description)
-    .setFooter({ text: `Only ${percentOfPlayers}% of players have this achievement` });
+    .setFooter({ text: `${percentOfPlayers}% of players have this achievement` });
 }
 
 /**
