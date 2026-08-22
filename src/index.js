@@ -463,12 +463,15 @@ async function fetchLatestRelease(repository) {
 }
 
 /** Drops a release body's own leading title line if it has one, so it never duplicates the
- *  header this command already adds. Only strips a line that is bold end-to-end (e.g.
- *  "**📣 Game Tracker v1.0.0**") — a line that merely starts with bold text is left alone,
- *  so normal release notes are never touched by accident. */
-function stripLeadingTitleLine(body) {
+ *  header this command already adds. Only strips a line that is bold end-to-end AND mentions
+ *  the release's own version (e.g. "**📣 Game Tracker v1.0.0**") — an ordinary bold section
+ *  header used as the first line of real release notes (e.g. "**Being AFK no longer counts as
+ *  playing**") never mentions the version, so it's left alone. */
+function stripLeadingTitleLine(body, tagName) {
   const lines = body.split('\n');
-  if (lines[0] && /^\*\*.+\*\*$/.test(lines[0].trim())) {
+  const first = lines[0]?.trim();
+  const version = tagName.replace(/^v/i, '');
+  if (first && /^\*\*.+\*\*$/.test(first) && version && first.includes(version)) {
     lines.shift();
     while (lines[0] === '') lines.shift();
   }
@@ -851,7 +854,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.reply({ content: 'The latest GitHub Release has already been announced. Use `/changes force:True` to post it again.', flags: MessageFlags.Ephemeral });
         return;
       }
-      const body = stripLeadingTitleLine(release.body?.trim() || 'No release notes were provided.');
+      const body = stripLeadingTitleLine(release.body?.trim() || 'No release notes were provided.', release.tag_name);
       const announcement = `📣 **New Game Tracker version ${release.tag_name} released!**\n${body}`;
       for (const message of splitDiscordMessage(announcement)) {
         await channel.send({ content: message, allowedMentions: { parse: [] } });
