@@ -192,11 +192,19 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   `);
   const getPlayerAchievementsStmt = db.prepare('SELECT achievement_id, unlocked_at FROM achievements_unlocked WHERE guild_id = ? AND user_id = ? ORDER BY unlocked_at');
   const getAchievementUnlockCountStmt = db.prepare('SELECT COUNT(*) AS count FROM achievements_unlocked WHERE guild_id = ? AND achievement_id = ?');
-  const getDistinctGameCountStmt = db.prepare(`
-    SELECT COUNT(DISTINCT game_name) AS count FROM (
-      SELECT game_name FROM game_stats WHERE guild_id = ? AND user_id = ?
-      UNION SELECT game_name FROM active_sessions WHERE guild_id = ? AND user_id = ?
-    )
+  // Games with real time in them, not merely launched once. No active_sessions union: a session
+  // in flight has already banked everything but its last sub-minute tail into game_stats, and an
+  // hour's threshold cannot turn on that tail.
+  const getSubstantialGameCountStmt = db.prepare(`
+    SELECT COUNT(*) AS count FROM game_stats
+    WHERE guild_id = ? AND user_id = ? AND total_seconds >= ?
+  `);
+  // Per-game seconds for today, so the same-day variety tiers can apply that same "real time in
+  // it" bar. Attributed by started_at, matching every other today-scoped query here.
+  const getGameSecondsTodayStmt = db.prepare(`
+    SELECT game_name, SUM(duration_seconds) AS total_seconds FROM play_sessions
+    WHERE guild_id = ? AND user_id = ? AND started_at >= ?
+    GROUP BY game_name
   `);
   const getGamesTouchedSinceStmt = db.prepare(`
     SELECT COUNT(DISTINCT game_name) AS count FROM (
@@ -632,7 +640,9 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     getPlayerAchievements: (guildId, userId) => getPlayerAchievementsStmt.all(guildId, userId),
     getAchievementUnlockCount: (guildId, achievementId) => getAchievementUnlockCountStmt.get(guildId, achievementId).count,
     getTrackedPlayerCount: (guildId) => countTrackedPlayersStmt.get(guildId, guildId).count,
-    getDistinctGameCount: (guildId, userId) => getDistinctGameCountStmt.get(guildId, userId, guildId, userId).count,
+    getSubstantialGameCount: (guildId, userId, minSeconds) =>
+      getSubstantialGameCountStmt.get(guildId, userId, minSeconds).count,
+    getGameSecondsToday: (guildId, userId, dayStartMs) => getGameSecondsTodayStmt.all(guildId, userId, dayStartMs),
     getGamesTouchedSince: (guildId, userId, sinceMs) =>
       getGamesTouchedSinceStmt.get(guildId, userId, sinceMs, guildId, userId, sinceMs).count,
     getGameStartCountSince: (guildId, userId, gameName, sinceMs) =>

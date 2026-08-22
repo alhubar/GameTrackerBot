@@ -23,17 +23,18 @@ import { rankForSeconds } from './ranks.js';
  * share a value would fire together and read as a duplicate.
  */
 export const ACHIEVEMENTS = [
-  // Collection — how many different games you've touched, all time.
+  // Collection — how many different games you've put real time into, all time.
   { id: 'first_steps', emoji: '🐣', name: 'First Steps', description: 'Play your first tracked game.' },
-  { id: 'collector', emoji: '🗂️', name: 'Collector', description: 'Play 10 different games.' },
-  { id: 'game_hoarder', emoji: '📦', name: 'Game Hoarder', description: 'Play 25 different games.' },
-  { id: 'the_backlog', emoji: '📚', name: 'The Backlog', description: 'Play 50 different games.' },
-  { id: 'send_help', emoji: '🆘', name: 'Send Help', description: 'Play 75 different games.' },
+  { id: 'collector', emoji: '🗂️', name: 'Collector', description: 'Put an hour into each of 10 different games.' },
+  { id: 'game_hoarder', emoji: '📦', name: 'Game Hoarder', description: 'Put an hour into each of 25 different games.' },
+  { id: 'the_backlog', emoji: '📚', name: 'The Backlog', description: 'Put an hour into each of 50 different games.' },
+  { id: 'send_help', emoji: '🆘', name: 'Send Help', description: 'Put an hour into each of 75 different games.' },
 
-  // Variety — how many different games in a single day.
-  { id: 'variety_is_overrated', emoji: '🎲', name: 'Variety Is Overrated', description: 'Play 3 different games in one day.' },
+  // Variety — how many different games in a single day. Speedrunner and The Speed Dating count
+  // games regardless of how briefly they ran; the other two need a real hour in each.
+  { id: 'variety_is_overrated', emoji: '🎲', name: 'Variety Is Overrated', description: 'Play 3 different games for an hour each in one day.' },
   { id: 'speedrunner', emoji: '🏃', name: 'Speedrunner', description: 'Start 5 different games within a 3-hour window.' },
-  { id: 'identity_crisis', emoji: '🌀', name: 'Identity Crisis', description: 'Play 6 different games in one day.' },
+  { id: 'identity_crisis', emoji: '🌀', name: 'Identity Crisis', description: 'Play 6 different games for an hour each in one day.' },
   { id: 'speed_dating', emoji: '💔', name: 'The Speed Dating', description: 'Play 4 different games in one day, none longer than 10 minutes.' },
 
   // Attendance — distinct days played, any game, in any order.
@@ -112,6 +113,26 @@ const SOCIAL_TIERS = [
 ];
 const WHALE_HOURS_SECONDS = 120 * 3600;
 const QUALIFYING_SESSION_SECONDS = 3600;
+/**
+ * How much time a game needs before it counts as one of your "different games". Cumulative across
+ * sessions, unlike QUALIFYING_SESSION_SECONDS, which asks the same of a single sitting.
+ *
+ * Without this, every game-count tier — the collection ladder and the same-day variety pair alike —
+ * could be cleared by launching things for a second each, which is the opposite of what they are
+ * meant to reward. Speedrunner and The Speed Dating deliberately opt out: both are *about* churn,
+ * and gating them here would make the first impossible and the second self-contradictory.
+ */
+const COUNTS_AS_PLAYED_SECONDS = 3600;
+const COLLECTION_TIERS = [
+  [10, 'collector'],
+  [25, 'game_hoarder'],
+  [50, 'the_backlog'],
+  [75, 'send_help'],
+];
+const SAME_DAY_VARIETY_TIERS = [
+  [3, 'variety_is_overrated'],
+  [6, 'identity_crisis'],
+];
 const BETRAYAL_MAX_SECONDS = 60;
 const BETRAYAL_GRACE_MS = 2 * MINUTE;
 export const DUO_DAYS_NEEDED = 5;
@@ -141,26 +162,53 @@ function tryUnlock(db, guildId, userId, achievementId, now, unlocked) {
   if (db.unlockAchievement(guildId, userId, achievementId, now)) unlocked.push(achievementId);
 }
 
+/**
+ * The game-count tiers: how many games you've put a real hour into, all time and again today.
+ *
+ * Called from session start, end *and* checkpoint, because the moment that matters is no longer a
+ * session starting — it's a game crossing COUNTS_AS_PLAYED_SECONDS, which almost always happens
+ * mid-session. Checking only at start would hold the award back until the member's next launch.
+ *
+ * `running` folds a still-in-flight session into today's per-game totals, which are otherwise built
+ * from completed sessions alone. Its banked time is already in game_stats, so it is deliberately
+ * not added to the all-time count as well — that would credit it twice.
+ */
+function evaluateGameCountTiers(db, guildId, userId, now, unlocked, running = null) {
+  const distinctGames = db.getSubstantialGameCount(guildId, userId, COUNTS_AS_PLAYED_SECONDS);
+  for (const [threshold, achievementId] of COLLECTION_TIERS) {
+    if (distinctGames >= threshold) tryUnlock(db, guildId, userId, achievementId, now, unlocked);
+  }
+
+  const secondsByGame = new Map(
+    db.getGameSecondsToday(guildId, userId, dayStartUTC(now)).map((row) => [row.game_name, row.total_seconds]),
+  );
+  if (running) {
+    secondsByGame.set(running.gameName, (secondsByGame.get(running.gameName) ?? 0) + running.seconds);
+  }
+  let gamesToday = 0;
+  for (const seconds of secondsByGame.values()) {
+    if (seconds >= COUNTS_AS_PLAYED_SECONDS) gamesToday++;
+  }
+  for (const [threshold, achievementId] of SAME_DAY_VARIETY_TIERS) {
+    if (gamesToday >= threshold) tryUnlock(db, guildId, userId, achievementId, now, unlocked);
+  }
+}
+
 /** Call right after a member starts a new game session (session actually changed). */
 export function evaluateSessionStart(db, guildId, userId, gameName, now) {
   const unlocked = [];
   const dayStart = dayStartUTC(now);
 
-  const distinctGames = db.getDistinctGameCount(guildId, userId);
-
   // Fires on the first session the bot observes, not the member's first ever. Members who were
   // being tracked before achievements shipped have playtime but no unlock row, and gating this on
-  // an empty history would mean they could never earn it.
+  // an empty history would mean they could never earn it. Deliberately not held to
+  // COUNTS_AS_PLAYED_SECONDS like the tiers below — it is the welcome award, and an hour's wait
+  // would defeat the point of it.
   tryUnlock(db, guildId, userId, 'first_steps', now, unlocked);
 
-  if (distinctGames >= 10) tryUnlock(db, guildId, userId, 'collector', now, unlocked);
-  if (distinctGames >= 25) tryUnlock(db, guildId, userId, 'game_hoarder', now, unlocked);
-  if (distinctGames >= 50) tryUnlock(db, guildId, userId, 'the_backlog', now, unlocked);
-  if (distinctGames >= 75) tryUnlock(db, guildId, userId, 'send_help', now, unlocked);
-
-  const gamesToday = db.getGamesTouchedSince(guildId, userId, dayStart);
-  if (gamesToday >= 3) tryUnlock(db, guildId, userId, 'variety_is_overrated', now, unlocked);
-  if (gamesToday >= 6) tryUnlock(db, guildId, userId, 'identity_crisis', now, unlocked);
+  // The game starting right now has no time in it yet, so it cannot be what tips these over; this
+  // call catches a threshold reached earlier and missed, e.g. across a restart.
+  evaluateGameCountTiers(db, guildId, userId, now, unlocked);
 
   // Loyalty to one game is deliberately set above the equivalent any-game milestone (7 days for
   // Regular, 30 for Dedicated) so a member who only ever plays one game doesn't trip both at once.
@@ -275,10 +323,14 @@ export function evaluateSessionEnd(db, guildId, userId, completedSession, now) {
   for (const [threshold, achievementId] of SHORT_SESSION_TIERS) {
     if (durationMs < threshold) tryUnlock(db, guildId, userId, achievementId, now, unlocked);
   }
-  // One above Variety Is Overrated's 3 games, which every qualifying day would otherwise satisfy too.
+  // Left ungated on purpose: this one rewards games *not* played for long, so the hour that makes a
+  // game count toward the variety tiers would contradict it outright. The two are now mutually
+  // exclusive over the same set of games, which is the intent.
   if (db.getShortGameCountToday(guildId, userId, dayStartUTC(now), 600) >= 4) {
     tryUnlock(db, guildId, userId, 'speed_dating', now, unlocked);
   }
+  // The session just closed is in play_sessions now, so today's totals already include it.
+  evaluateGameCountTiers(db, guildId, userId, now, unlocked);
   if (db.getGameStatsTotal(guildId, userId, completedSession.gameName) >= WHALE_HOURS_SECONDS) {
     tryUnlock(db, guildId, userId, 'the_whale', now, unlocked);
   }
@@ -309,6 +361,13 @@ export function evaluateOngoingSession(db, guildId, userId, gameName, startedAt,
     const priorQualifying = db.getQualifyingSessionCountToday(guildId, userId, gameName, dayStartUTC(now), QUALIFYING_SESSION_SECONDS);
     if (priorQualifying + 1 >= 3) tryUnlock(db, guildId, userId, 'surely_not', now, unlocked);
   }
+  // This is the tick where a game usually earns its place in the count, so the tiers are checked
+  // here rather than waiting for the session to end. A session that began before midnight is not
+  // folded into today — completed sessions are attributed by their start day, and this matches.
+  const running = startedAt >= dayStartUTC(now)
+    ? { gameName, seconds: Math.floor(elapsedMs / 1000) }
+    : null;
+  evaluateGameCountTiers(db, guildId, userId, now, unlocked, running);
   return unlocked;
 }
 
