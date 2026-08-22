@@ -294,8 +294,12 @@ export function evaluateOngoingSession(db, guildId, userId, gameName, startedAt,
   for (const [threshold, achievementId] of SESSION_LENGTH_TIERS) {
     if (elapsedMs >= threshold) tryUnlock(db, guildId, userId, achievementId, now, unlocked);
   }
-  const totalForGame = db.getGameStatsTotal(guildId, userId, gameName) + Math.floor(elapsedMs / 1000);
-  if (totalForGame >= WHALE_HOURS_SECONDS) tryUnlock(db, guildId, userId, 'the_whale', now, unlocked);
+  // elapsedMs drives the session-length tiers above, but must NOT be added here: the checkpoint
+  // loop banks the running session into game_stats before calling this, so getGameStatsTotal
+  // already includes it. Adding it again unlocks the whale a full session-length early.
+  if (db.getGameStatsTotal(guildId, userId, gameName) >= WHALE_HOURS_SECONDS) {
+    tryUnlock(db, guildId, userId, 'the_whale', now, unlocked);
+  }
   if (elapsedMs >= QUALIFYING_SESSION_SECONDS * 1000) {
     // The still-running session just crossed the 1-hour mark itself — count it alongside any
     // earlier qualifying sessions today, so this can be the 3rd one without having to end first.

@@ -271,7 +271,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     SELECT game_name, SUM(total_seconds) AS total_seconds FROM (
       SELECT game_name, total_seconds FROM game_stats WHERE guild_id = ?
       UNION ALL
-      SELECT game_name, CAST(MAX(0, (? - started_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
+      SELECT game_name, CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
     ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT 1
   `);
   const getTopGameByPlayerCountStmt = db.prepare(`
@@ -400,7 +400,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 		UNION ALL
 
 			SELECT game_name,
-			CAST(MAX(0, (? - started_at) / 1000) AS INTEGER)
+			CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)
 			FROM active_sessions
 			WHERE guild_id = ? AND user_id = ?
 			)
@@ -445,7 +445,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 			UNION ALL
 
 			SELECT game_name,
-				CAST(MAX(0, (? - started_at) / 1000) AS INTEGER)
+				CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)
 			FROM active_sessions
 			WHERE guild_id = ?
 		)
