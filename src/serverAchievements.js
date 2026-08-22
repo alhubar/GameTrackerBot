@@ -1,5 +1,5 @@
 import { RANKS, RANK_HOURS, rankForSeconds } from './ranks.js';
-import { currentStreak, DUO_DAYS_NEEDED } from './achievements.js';
+import { currentStreak, DUO_DAYS_NEEDED, COUNTS_AS_PLAYED_SECONDS } from './achievements.js';
 
 function csvNumbers(variable, fallback) {
   const value = process.env[variable];
@@ -37,7 +37,7 @@ const CATEGORIES = [
       { id: 'game_store', emoji: '🏪', name: 'Game Store' },
       { id: 'steam_sale_survivor', emoji: '💸', name: 'Steam Sale Survivor' },
     ],
-    describe: (n) => `Track ${n} different games.`,
+    describe: (n) => `Track ${n} different games, with at least an hour played in each.`,
     celebrate: (n, metrics) => `The server has now tracked **${metrics.gamesTracked} different games**!`,
   },
   {
@@ -75,7 +75,7 @@ const CATEGORIES = [
       { id: 'we_all_play_this', emoji: '👥', name: 'We All Play This Apparently' },
       { id: 'the_server_game', emoji: '👑', name: 'The Server Game' },
     ],
-    describe: (n) => `${n} different members have played the same game.`,
+    describe: (n) => `${n} different members have each played the same game for an hour.`,
     celebrate: (n, metrics) => `**${metrics.topGamePlayerCount} different members** have all played **${metrics.topGamePlayerCountName ?? 'the same game'}**!`,
   },
   {
@@ -174,12 +174,12 @@ const TOP_RANK_SECONDS = RANK_HOURS[RANK_HOURS.length - 1] * 3600;
 export function computeServerMetrics(db, guildId, now = Date.now()) {
   const totalSeconds = db.getGuildTotalSeconds(guildId, now);
   const topByHours = db.getTopGameByHours(guildId, now);
-  const topByPlayers = db.getTopGameByPlayerCount(guildId);
+  const topByPlayers = db.getTopGameByPlayerCount(guildId, COUNTS_AS_PLAYED_SECONDS);
   const memberTotals = db.getAllMemberTotals(guildId, now);
   const rankTiersPresent = new Set(memberTotals.map((row) => rankForSeconds(row.total_seconds)).filter((rank) => rank >= 0));
   return {
     trackedPlayers: db.getTrackedPlayerCount(guildId),
-    gamesTracked: db.getGuildGameCount(guildId),
+    gamesTracked: db.getGuildGameCount(guildId, COUNTS_AS_PLAYED_SECONDS),
     totalSeconds,
     totalHours: totalSeconds / 3600,
     topGameHours: (topByHours?.total_seconds ?? 0) / 3600,

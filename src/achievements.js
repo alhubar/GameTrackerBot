@@ -122,7 +122,7 @@ const QUALIFYING_SESSION_SECONDS = 3600;
  * meant to reward. Speedrunner and The Speed Dating deliberately opt out: both are *about* churn,
  * and gating them here would make the first impossible and the second self-contradictory.
  */
-const COUNTS_AS_PLAYED_SECONDS = 3600;
+export const COUNTS_AS_PLAYED_SECONDS = 3600;
 const COLLECTION_TIERS = [
   [10, 'collector'],
   [25, 'game_hoarder'],

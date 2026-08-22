@@ -281,10 +281,12 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     INSERT OR IGNORE INTO server_achievements_unlocked (guild_id, achievement_id, unlocked_at) VALUES (?, ?, ?)
   `);
   const getServerAchievementsStmt = db.prepare('SELECT achievement_id, unlocked_at FROM server_achievements_unlocked WHERE guild_id = ? ORDER BY unlocked_at');
+  // Games the server has collectively put real time into, summed across every member. Same bar and
+  // same no-active_sessions reasoning as getSubstantialGameCount, one level up.
   const getGuildGameCountStmt = db.prepare(`
-    SELECT COUNT(DISTINCT game_name) AS count FROM (
+    SELECT COUNT(*) AS count FROM (
       SELECT game_name FROM game_stats WHERE guild_id = ?
-      UNION SELECT game_name FROM active_sessions WHERE guild_id = ?
+      GROUP BY game_name HAVING SUM(total_seconds) >= ?
     )
   `);
   const getGuildBaseSecondsStmt = db.prepare('SELECT COALESCE(SUM(total_seconds), 0) AS total_seconds FROM member_stats WHERE guild_id = ?');
@@ -299,11 +301,12 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       SELECT game_name, CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
     ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT 1
   `);
+  // Counts a member toward a game only once they personally have minSeconds in it, so a crowd that
+  // all launched the same thing once does not read as a game the whole server plays.
   const getTopGameByPlayerCountStmt = db.prepare(`
-    SELECT game_name, COUNT(DISTINCT user_id) AS players FROM (
-      SELECT user_id, game_name FROM game_stats WHERE guild_id = ?
-      UNION SELECT user_id, game_name FROM active_sessions WHERE guild_id = ?
-    ) GROUP BY game_name ORDER BY players DESC LIMIT 1
+    SELECT game_name, COUNT(DISTINCT user_id) AS players FROM game_stats
+    WHERE guild_id = ? AND total_seconds >= ?
+    GROUP BY game_name ORDER BY players DESC LIMIT 1
   `);
   const getConcurrentGameCountStmt = db.prepare('SELECT COUNT(DISTINCT game_name) AS count FROM active_sessions WHERE guild_id = ?');
   const getPlayersAboveSecondsStmt = db.prepare('SELECT COUNT(*) AS count FROM member_stats WHERE guild_id = ? AND total_seconds >= ?');
@@ -693,11 +696,11 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     unlockServerAchievement: (guildId, achievementId, now = Date.now()) =>
       unlockServerAchievementStmt.run(guildId, achievementId, now).changes === 1,
     getServerAchievements: (guildId) => getServerAchievementsStmt.all(guildId),
-    getGuildGameCount: (guildId) => getGuildGameCountStmt.get(guildId, guildId).count,
+    getGuildGameCount: (guildId, minSeconds) => getGuildGameCountStmt.get(guildId, minSeconds).count,
     getGuildTotalSeconds: (guildId, now = Date.now()) =>
       getGuildBaseSecondsStmt.get(guildId).total_seconds + getGuildActiveSecondsStmt.get(now, guildId).total_seconds,
     getTopGameByHours: (guildId, now = Date.now()) => getTopGameByHoursStmt.get(guildId, now, guildId) ?? null,
-    getTopGameByPlayerCount: (guildId) => getTopGameByPlayerCountStmt.get(guildId, guildId) ?? null,
+    getTopGameByPlayerCount: (guildId, minSeconds) => getTopGameByPlayerCountStmt.get(guildId, minSeconds) ?? null,
     getConcurrentGameCount: (guildId) => getConcurrentGameCountStmt.get(guildId).count,
     getPlayersAboveSeconds: (guildId, thresholdSeconds) => getPlayersAboveSecondsStmt.get(guildId, thresholdSeconds).count,
     getGuildGamesToday: (guildId, dayStartMs) => getGuildGamesTodayStmt.get(guildId, dayStartMs, guildId, dayStartMs).count,
