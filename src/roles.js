@@ -1,3 +1,4 @@
+import { memberRef } from './log.js';
 import { ACHIEVEMENT_GOLD } from './embeds.js';
 
 /**
@@ -11,7 +12,7 @@ export async function clearWinnerRole(guild, roleName) {
   await guild.members.fetch().catch(() => null);
   for (const holder of role.members.values()) {
     await holder.roles.remove(role, `No longer ${roleName}`).catch((error) =>
-      console.error(`Could not take the badge from ${holder.id}:`, error));
+      console.error(`Could not take the badge from ${memberRef(holder.id)}:`, error));
   }
   return role;
 }
@@ -62,7 +63,7 @@ export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = nu
   for (const holder of role.members.values()) {
     if (holder.id === winnerId) continue;
     await holder.roles.remove(role, `No longer ${roleName}`).catch((error) =>
-      console.error(`Could not take the monthly role from ${holder.id}:`, error));
+      console.error(`Could not take the monthly role from ${memberRef(holder.id)}:`, error));
   }
   const winner = await guild.members.fetch(winnerId).catch(() => null);
   if (winner && !winner.roles.cache.has(role.id)) {

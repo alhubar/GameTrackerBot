@@ -8,6 +8,15 @@ Tracks time a member is visibly playing a game in Discord, stores it locally, an
 - Time across all games, including changing from one game to another.
 - One active game at a time per member; if Discord shows several games, the first one is used.
 - Time is saved every minute and when Discord reports the game has changed/stopped.
+- **Idle time is not counted.** Discord marks a member idle after roughly ten minutes without
+  input while still reporting whatever game is open, so a launcher left running overnight would
+  otherwise bank a full night of playtime. The clock stops when a member goes idle and restarts
+  when they return; the gap counts toward nothing — not totals, not ranks, not the leaderboard,
+  and not the session-length achievements. Set `PAUSE_ON_IDLE=false` to count idle time as play.
+- **Sessions are capped.** For the cases idle never catches — a mouse jiggler, or a client that
+  simply never reports idle — any session past `MAX_SESSION_HOURS` of active time is closed.
+  Anyone genuinely still playing is picked up again on their next presence change. Keep the cap
+  above your longest session-length achievement, or that one can never be earned.
 
 ## Customize ranks
 
@@ -28,13 +37,21 @@ You can customize every announcement independently with `LEVEL_UP_MESSAGE_1` thr
 2. In this folder, run `npm install`.
 3. Copy `.env.example` to `.env`, then fill in `DISCORD_TOKEN`.
 4. In the Discord Developer Portal, enable **Presence Intent** and **Server Members Intent** under **Bot → Privileged Gateway Intents**.
-5. Invite the bot with the `bot` and `applications.commands` scopes. Give it **Manage Roles**, and put its role above the ten tracker roles in the server role list.
+5. Invite the bot with the `bot` and `applications.commands` scopes. Give it **Manage Roles**, and put its role above the tracker roles in the server role list.
 6. Start it with `npm start`.
 7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`.
 
 `data/tracker.sqlite` is created automatically. Back it up if you want to preserve history when moving the bot.
 
 ## Notes
+
+**One server per instance.** Ranks, thresholds, channel names and recap settings all come from
+`.env`, so every guild the bot joins shares the same configuration and posts to same-named
+channels. Run a separate instance per server if you need them configured differently.
+
+Error lines refer to members by a short hash rather than a username or id, so pasting a stack trace
+into an issue or a chat does not publish who it was about. Set `DEBUG_IDENTIFIERS=true` to log real
+ids while debugging.
 
 Discord can only report games a member exposes through their Discord presence. The bot cannot see activity hidden by a member's privacy settings, nor activity while Discord itself is offline. After a bot restart it begins timing any current activity from the time it reconnects.
 

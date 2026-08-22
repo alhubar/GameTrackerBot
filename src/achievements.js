@@ -99,6 +99,8 @@ const SESSION_LENGTH_TIERS = [
   [8 * HOUR, 'sleep_is_optional'],
   [11 * HOUR, 'what_day_is_it'],
 ];
+/** The longest session-length achievement, so the session cap can be checked against it. */
+export const LONGEST_SESSION_ACHIEVEMENT_MS = Math.max(...SESSION_LENGTH_TIERS.map(([ms]) => ms));
 const SHORT_SESSION_TIERS = [
   [30_000, 'wrong_game'],
 ];
@@ -288,9 +290,10 @@ export function evaluateSessionEnd(db, guildId, userId, completedSession, now) {
 }
 
 /** Call periodically (e.g. every checkpoint tick) for a still-ongoing session, so long-session/hour-milestone achievements fire while playing, not just at the end. */
-export function evaluateOngoingSession(db, guildId, userId, gameName, startedAt, now) {
+export function evaluateOngoingSession(db, guildId, userId, gameName, startedAt, now, pausedMs = 0) {
   const unlocked = [];
-  const elapsedMs = now - startedAt;
+  // Idle stretches are subtracted, so a launcher left open overnight cannot earn a marathon badge.
+  const elapsedMs = Math.max(0, now - startedAt - pausedMs);
   for (const [threshold, achievementId] of SESSION_LENGTH_TIERS) {
     if (elapsedMs >= threshold) tryUnlock(db, guildId, userId, achievementId, now, unlocked);
   }

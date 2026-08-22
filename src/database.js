@@ -19,6 +19,8 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       game_name TEXT NOT NULL,
       started_at INTEGER NOT NULL,
       last_checkpoint_at INTEGER,
+      paused_at INTEGER,
+      paused_seconds INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (guild_id, user_id)
     );
     CREATE TABLE IF NOT EXISTS game_stats (
@@ -39,6 +41,10 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       duration_seconds INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_play_sessions_guild_user_game ON play_sessions (guild_id, user_id, game_name);
+    -- The monthly leaderboard, the recap and several server metrics filter on a time window
+    -- rather than on a member, so they miss the index above entirely.
+    CREATE INDEX IF NOT EXISTS idx_play_sessions_guild_ended ON play_sessions (guild_id, ended_at);
+    CREATE INDEX IF NOT EXISTS idx_play_sessions_guild_started ON play_sessions (guild_id, started_at);
     CREATE TABLE IF NOT EXISTS guild_settings (
       guild_id TEXT PRIMARY KEY,
       notification_channel_id TEXT,
@@ -99,6 +105,12 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   if (!activeSessionColumns.some((column) => column.name === 'last_checkpoint_at')) {
     db.exec('ALTER TABLE active_sessions ADD COLUMN last_checkpoint_at INTEGER');
   }
+  if (!activeSessionColumns.some((column) => column.name === 'paused_at')) {
+    db.exec('ALTER TABLE active_sessions ADD COLUMN paused_at INTEGER');
+  }
+  if (!activeSessionColumns.some((column) => column.name === 'paused_seconds')) {
+    db.exec('ALTER TABLE active_sessions ADD COLUMN paused_seconds INTEGER NOT NULL DEFAULT 0');
+  }
   const guildSettingsColumns = db.prepare('PRAGMA table_info(guild_settings)').all();
   if (!guildSettingsColumns.some((column) => column.name === 'last_announced_release_id')) {
     db.exec('ALTER TABLE guild_settings ADD COLUMN last_announced_release_id TEXT');
@@ -120,9 +132,14 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   const getSession = db.prepare('SELECT * FROM active_sessions WHERE guild_id = ? AND user_id = ?');
   const createSession = db.prepare(`
     INSERT INTO active_sessions (guild_id, user_id, game_name, started_at, last_checkpoint_at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(guild_id, user_id) DO UPDATE SET game_name = excluded.game_name, started_at = excluded.started_at, last_checkpoint_at = excluded.last_checkpoint_at
+    ON CONFLICT(guild_id, user_id) DO UPDATE SET game_name = excluded.game_name, started_at = excluded.started_at, last_checkpoint_at = excluded.last_checkpoint_at, paused_at = NULL, paused_seconds = 0
   `);
   const resetSessionCheckpoint = db.prepare('UPDATE active_sessions SET last_checkpoint_at = ? WHERE guild_id = ? AND user_id = ?');
+  const markSessionPaused = db.prepare('UPDATE active_sessions SET paused_at = ?, last_checkpoint_at = ? WHERE guild_id = ? AND user_id = ?');
+  const markSessionResumed = db.prepare(`
+    UPDATE active_sessions SET paused_at = NULL, paused_seconds = paused_seconds + ?, last_checkpoint_at = ?
+    WHERE guild_id = ? AND user_id = ?
+  `);
   const removeSession = db.prepare('DELETE FROM active_sessions WHERE guild_id = ? AND user_id = ?');
   // Per-game time and the session tally are bumped separately: time accrues at every checkpoint so
   // an interrupted session still leaves its playtime attributed to the right game, while the tally
@@ -264,14 +281,14 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   `);
   const getGuildBaseSecondsStmt = db.prepare('SELECT COALESCE(SUM(total_seconds), 0) AS total_seconds FROM member_stats WHERE guild_id = ?');
   const getGuildActiveSecondsStmt = db.prepare(`
-    SELECT COALESCE(SUM(CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)), 0) AS total_seconds
+    SELECT COALESCE(SUM(CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)), 0) AS total_seconds
     FROM active_sessions WHERE guild_id = ?
   `);
   const getTopGameByHoursStmt = db.prepare(`
     SELECT game_name, SUM(total_seconds) AS total_seconds FROM (
       SELECT game_name, total_seconds FROM game_stats WHERE guild_id = ?
       UNION ALL
-      SELECT game_name, CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
+      SELECT game_name, CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
     ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT 1
   `);
   const getTopGameByPlayerCountStmt = db.prepare(`
@@ -299,7 +316,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     SELECT user_id, SUM(total_seconds) AS total_seconds FROM (
       SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
       UNION ALL
-      SELECT user_id, CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
+      SELECT user_id, CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
     ) GROUP BY user_id
   `);
   const getQualifiedDuoPairCountStmt = db.prepare(`
@@ -335,17 +352,66 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     INSERT OR IGNORE INTO event_reminders_sent (event_id, stage_minutes, sent_at) VALUES (?, ?, ?)
   `);
 
+  const getLeaderboardStmt = db.prepare(`
+    SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
+    ORDER BY total_seconds DESC LIMIT ?
+  `);
+  // Completed sessions clamped to the window, plus whatever the live sessions have earned inside
+  // it. Without the second half a member six hours into a session sees those hours on their /stats
+  // card and none of them on the board. Idle time is excluded here exactly as it is everywhere else.
+  const getMonthlyLeaderboardStmt = db.prepare(`
+    SELECT user_id, SUM(seconds) AS total_seconds FROM (
+      SELECT user_id, CASE WHEN ended_at > ? THEN
+        CAST((MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
+        ELSE 0 END AS seconds
+      FROM play_sessions WHERE guild_id = ?
+
+      UNION ALL
+
+      SELECT user_id, CAST(MAX(0, MIN(
+        (? - started_at) - paused_seconds * 1000
+          - (CASE WHEN paused_at IS NOT NULL THEN MAX(0, ? - paused_at) ELSE 0 END),
+        ? - ?
+      )) / 1000 AS INTEGER) AS seconds
+      FROM active_sessions WHERE guild_id = ?
+    )
+    GROUP BY user_id
+    HAVING SUM(seconds) > 0
+    ORDER BY total_seconds DESC LIMIT ?
+  `);
+
+  /**
+   * Wall-clock time since the session started, minus every stretch the member spent idle.
+   *
+   * This is the number that drives session-length achievements and the duration written to
+   * play_sessions, so an overnight AFK session is worth only the part somebody was actually at the
+   * keyboard. `started_at` itself stays truthful — the pause is subtracted rather than folded into
+   * it — because the day-boundary queries group on `started_at` and must not be shifted.
+   */
+  function activeElapsedMs(session, now) {
+    const pausedSoFar = session.paused_at ? now - session.paused_at : 0;
+    return Math.max(0, (now - session.started_at) - session.paused_seconds * 1000 - pausedSoFar);
+  }
+
+  /** Seconds owed but not yet banked. A paused session owes nothing past the moment it paused. */
+  function unbankedSeconds(session, now) {
+    if (!session) return 0;
+    return Math.max(0, Math.floor(((session.paused_at ?? now) - session.last_checkpoint_at) / 1000));
+  }
+
   function closeSession(guildId, userId, now = Date.now()) {
     const session = getSession.get(guildId, userId);
     if (!session) return null;
     // Only the slice since the last checkpoint is new; everything before it was already banked by
-    // checkpointAll into both member_stats and game_stats.
-    const unrecordedSeconds = Math.max(0, Math.floor((now - session.last_checkpoint_at) / 1000));
+    // checkpointAll into both member_stats and game_stats. A paused session banked its time up to
+    // the moment it paused, so nothing after that point is owed.
+    const creditableUntil = session.paused_at ?? now;
+    const unrecordedSeconds = Math.max(0, Math.floor((creditableUntil - session.last_checkpoint_at) / 1000));
     if (unrecordedSeconds) {
       addTime.run(guildId, userId, unrecordedSeconds);
       addGameSeconds.run(guildId, userId, session.game_name, unrecordedSeconds);
     }
-    const totalSeconds = Math.max(0, Math.floor((now - session.started_at) / 1000));
+    const totalSeconds = Math.max(0, Math.floor(activeElapsedMs(session, now) / 1000));
     let completed = null;
     if (totalSeconds) {
       bumpGameSessionCount.run(guildId, userId, session.game_name);
@@ -379,7 +445,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     getTotalSeconds: (guildId, userId) => getStats.get(guildId, userId)?.total_seconds ?? 0,
     getPlayerProfile(guildId, userId, now = Date.now(), topGamesLimit = 3) {
       const active = getSession.get(guildId, userId);
-      const activeSeconds = active ? Math.max(0, Math.floor((now - active.last_checkpoint_at) / 1000)) : 0;
+      const activeSeconds = unbankedSeconds(active, now);
       const totalSeconds = (getStats.get(guildId, userId)?.total_seconds ?? 0) + activeSeconds;
       const nowDate = new Date(now);
       const monthStart = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1);
@@ -389,7 +455,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
           ELSE 0 END), 0) AS total_seconds
         FROM play_sessions WHERE guild_id = ? AND user_id = ?
       `).get(monthStart, now, monthStart, guildId, userId).total_seconds
-        + (active ? Math.max(0, Math.floor((now - Math.max(active.started_at, monthStart)) / 1000)) : 0);
+        + (active ? Math.floor(Math.min(activeElapsedMs(active, now), now - monthStart) / 1000) : 0);
       const topGames = db.prepare(`
 		SELECT game_name, SUM(total_seconds) AS total_seconds
 		FROM (
@@ -400,7 +466,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 		UNION ALL
 
 			SELECT game_name,
-			CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)
+			CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)
 			FROM active_sessions
 			WHERE guild_id = ? AND user_id = ?
 			)
@@ -411,7 +477,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       const longest = db.prepare(`
         SELECT MAX(duration_seconds) AS duration_seconds FROM play_sessions WHERE guild_id = ? AND user_id = ?
       `).get(guildId, userId).duration_seconds ?? 0;
-      const activeDuration = active ? Math.max(0, Math.floor((now - active.started_at) / 1000)) : 0;
+      const activeDuration = active ? Math.floor(activeElapsedMs(active, now) / 1000) : 0;
       const gamesPlayed = db.prepare(`
         SELECT COUNT(DISTINCT game_name) AS count FROM (
           SELECT game_name FROM game_stats WHERE guild_id = ? AND user_id = ?
@@ -428,7 +494,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     },
     getServerProfile(guildId, now = Date.now()) {
       const activeSeconds = db.prepare(`
-        SELECT COALESCE(SUM(CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)), 0) AS total_seconds
+        SELECT COALESCE(SUM(CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)), 0) AS total_seconds
         FROM active_sessions WHERE guild_id = ?
       `).get(now, guildId).total_seconds;
       const totalSeconds = (db.prepare(`
@@ -445,7 +511,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 			UNION ALL
 
 			SELECT game_name,
-				CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)
+				CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)
 			FROM active_sessions
 			WHERE guild_id = ?
 		)
@@ -457,7 +523,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
         SELECT user_id, SUM(total_seconds) AS total_seconds FROM (
           SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
           UNION ALL
-          SELECT user_id, CAST(MAX(0, (? - last_checkpoint_at) / 1000) AS INTEGER)
+          SELECT user_id, CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)
           FROM active_sessions WHERE guild_id = ?
         ) GROUP BY user_id ORDER BY total_seconds DESC LIMIT 3
       `).all(guildId, now, guildId);
@@ -475,19 +541,13 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     setLastAnnouncedRelease: (guildId, releaseId) => setLastAnnouncedRelease.run(guildId, String(releaseId)),
     getRankRoles: (guildId) => getRankRoles.all(guildId),
     saveRankRole: (guildId, rankIndex, roleId) => saveRankRole.run(guildId, rankIndex, roleId),
-    getLeaderboard: (guildId, limit = 10) => db.prepare(`
-      SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
-      ORDER BY total_seconds DESC LIMIT ?
-    `).all(guildId, limit),
-    getMonthlyLeaderboard: (guildId, monthStart, now = Date.now(), limit = 10) => db.prepare(`
-      SELECT user_id, COALESCE(SUM(CASE WHEN ended_at > ? THEN
-        CAST((MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
-        ELSE 0 END), 0) AS total_seconds
-      FROM play_sessions WHERE guild_id = ?
-      GROUP BY user_id
-      HAVING total_seconds > 0
-      ORDER BY total_seconds DESC LIMIT ?
-    `).all(monthStart, now, monthStart, guildId, limit),
+    getLeaderboard: (guildId, limit = 10) => getLeaderboardStmt.all(guildId, limit),
+    getMonthlyLeaderboard: (guildId, monthStart, now = Date.now(), limit = 10) =>
+      getMonthlyLeaderboardStmt.all(
+        monthStart, now, monthStart, guildId,
+        now, now, now, monthStart, guildId,
+        limit,
+      ),
     startSession(guildId, userId, gameName, now = Date.now()) {
       const existing = getSession.get(guildId, userId);
       if (existing?.game_name === gameName) return { changed: false, previous: null };
@@ -496,8 +556,10 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       return { changed: true, previous };
     },
     stopSession: (guildId, userId, now = Date.now()) => closeSession(guildId, userId, now),
+    // Paused (idle) sessions are skipped outright: their clock stopped when they paused, so they
+    // accrue nothing and their checkpoint stays put until the member comes back.
     checkpointAll(now = Date.now()) {
-      const sessions = db.prepare('SELECT guild_id, user_id FROM active_sessions').all();
+      const sessions = db.prepare('SELECT guild_id, user_id FROM active_sessions WHERE paused_at IS NULL').all();
       for (const session of sessions) {
         const active = getSession.get(session.guild_id, session.user_id);
         const seconds = Math.max(0, Math.floor((now - active.last_checkpoint_at) / 1000));
@@ -509,8 +571,52 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
         session.elapsed_seconds = seconds;
         session.game_name = active.game_name;
         session.started_at = active.started_at;
+        session.paused_ms = active.paused_seconds * 1000;
       }
       return sessions;
+    },
+
+    /**
+     * Stops the clock on a member's session without ending it, banking everything owed up to now.
+     * Returns false when there is nothing to do, so callers can skip the work a real change implies.
+     */
+    pauseSession(guildId, userId, now = Date.now()) {
+      const session = getSession.get(guildId, userId);
+      if (!session || session.paused_at) return false;
+      const seconds = Math.max(0, Math.floor((now - session.last_checkpoint_at) / 1000));
+      if (seconds) {
+        addTime.run(guildId, userId, seconds);
+        addGameSeconds.run(guildId, userId, session.game_name, seconds);
+      }
+      markSessionPaused.run(now, now, guildId, userId);
+      return true;
+    },
+
+    /** Restarts the clock, adding the idle stretch to paused_seconds so it is never credited. */
+    resumeSession(guildId, userId, now = Date.now()) {
+      const session = getSession.get(guildId, userId);
+      if (!session || !session.paused_at) return false;
+      const pausedSeconds = Math.max(0, Math.floor((now - session.paused_at) / 1000));
+      markSessionResumed.run(pausedSeconds, now, guildId, userId);
+      return true;
+    },
+
+    isSessionPaused: (guildId, userId) => !!getSession.get(guildId, userId)?.paused_at,
+
+    /**
+     * Hard cap. Closes any session whose *active* time has run past the limit, which is the only
+     * defence against a member who never goes idle (a jiggler, or a client that just never reports
+     * it). Returns the closed sessions so the caller can still run end-of-session achievements.
+     */
+    closeSessionsExceeding(maxActiveMs, now = Date.now()) {
+      const closed = [];
+      for (const row of db.prepare('SELECT guild_id, user_id FROM active_sessions').all()) {
+        const session = getSession.get(row.guild_id, row.user_id);
+        if (!session || activeElapsedMs(session, now) < maxActiveMs) continue;
+        const completed = closeSession(row.guild_id, row.user_id, now);
+        if (completed) closed.push({ guildId: row.guild_id, userId: row.user_id, completed });
+      }
+      return closed;
     },
     flushAll(now = Date.now()) {
       const sessions = db.prepare('SELECT guild_id, user_id FROM active_sessions').all();

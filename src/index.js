@@ -5,10 +5,12 @@ import {
   StringSelectMenuBuilder, MessageFlags,
 } from 'discord.js';
 import { openDatabase } from './database.js';
+import { memberRef } from './log.js';
 import { RANKS, RANK_HOURS, formatHours, formatPlayTime, levelUpMessageTemplate, rankForSeconds, roleName } from './ranks.js';
 import {
   ACHIEVEMENTS, achievementById, getUnlockedAchievements, evaluateSessionStart, evaluateSessionEnd,
   evaluateOngoingSession, evaluateSocialTiers, evaluateDuoDays, evaluateTouchGrass,
+  LONGEST_SESSION_ACHIEVEMENT_MS,
 } from './achievements.js';
 import {
   SERVER_ACHIEVEMENTS, serverAchievementById, getUnlockedServerAchievements, evaluateServerAchievements,
@@ -20,13 +22,15 @@ import { awardWinnerRole, clearWinnerRole } from './roles.js';
 
 if (!process.env.DISCORD_TOKEN) throw new Error('DISCORD_TOKEN is missing. Copy .env.example to .env and add your token.');
 
-const db = openDatabase();
+// Defaults to data/tracker.sqlite. Point DATABASE_PATH at a throwaway file to try the bot against
+// a test server without writing to the real one.
+const db = openDatabase(process.env.DATABASE_PATH?.trim() || undefined);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildPresences],
 });
 
 const commands = [
-  new SlashCommandBuilder().setName('setup').setDescription('Create the ten game-tracker rank roles')
+  new SlashCommandBuilder().setName('setup').setDescription(`Create the ${RANKS.length} game-tracker rank roles`)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder().setName('stats').setDescription('Show an interactive gaming profile card')
     .addUserOption((option) => option.setName('member').setDescription('Member to look up (defaults to you)')),
@@ -77,6 +81,25 @@ if (!Number.isFinite(RECAP_MIN_HOURS) || RECAP_MIN_HOURS < 0) {
   throw new Error(`RECAP_MIN_HOURS must be a non-negative number — got "${process.env.RECAP_MIN_HOURS}".`);
 }
 const RECAP_MIN_SECONDS = Math.round(RECAP_MIN_HOURS * 3600);
+// Anti-idle tracking. Discord flips a member to "idle" after roughly ten minutes without input but
+// keeps reporting whatever game is still open, so a launcher left running overnight would otherwise
+// bank a full night of playtime and outrank everyone who actually played.
+const HOUR_MS = 60 * 60 * 1000;
+const PAUSE_ON_IDLE = process.env.PAUSE_ON_IDLE?.trim().toLowerCase() !== 'false';
+// Backstop for the case idle never catches: a mouse jiggler, or a client that simply never reports
+// idle. Must stay above the longest session-length achievement or that badge becomes unreachable.
+const MAX_SESSION_HOURS = Number(process.env.MAX_SESSION_HOURS ?? '12');
+if (!Number.isFinite(MAX_SESSION_HOURS) || MAX_SESSION_HOURS < 0) {
+  throw new Error(`MAX_SESSION_HOURS must be a non-negative number — got "${process.env.MAX_SESSION_HOURS}".`);
+}
+if (MAX_SESSION_HOURS > 0 && MAX_SESSION_HOURS * HOUR_MS <= LONGEST_SESSION_ACHIEVEMENT_MS) {
+  console.warn(
+    `MAX_SESSION_HOURS is ${MAX_SESSION_HOURS}h, at or below the longest session-length achievement `
+    + `(${LONGEST_SESSION_ACHIEVEMENT_MS / HOUR_MS}h). That achievement can no longer be earned.`,
+  );
+}
+const MAX_SESSION_MS = MAX_SESSION_HOURS > 0 ? MAX_SESSION_HOURS * HOUR_MS : 0;
+
 function parseTimezonePresets(value) {
   const zones = value ? value.split(',').map((zone) => zone.trim()).filter(Boolean) : ['UTC', 'America/New_York', 'Europe/Berlin', 'Asia/Tokyo'];
   if (zones.length > 25) throw new Error('EVENT_TIMEZONE_PRESETS has more than 25 entries — Discord select menus support at most 25 options.');
@@ -502,6 +525,12 @@ async function updateActivity(member, presence) {
 
   if (game) {
     const { changed, previous } = db.startSession(member.guild.id, member.id, game, now);
+    // Discord reports "idle" after about ten minutes without input while still naming the game.
+    // Stop the clock on it and restart only once the member is genuinely back at the keyboard.
+    // A status flip carries no `changed`, so this has to run outside that branch.
+    const idleChanged = PAUSE_ON_IDLE && presence?.status === 'idle'
+      ? db.pauseSession(member.guild.id, member.id, now)
+      : db.resumeSession(member.guild.id, member.id, now);
     if (changed) {
       if (previous) {
         await announceAchievements(member, evaluateSessionEnd(db, member.guild.id, member.id, previous, now));
@@ -517,9 +546,23 @@ async function updateActivity(member, presence) {
         if (target) await announceAchievements(target, unlocked);
       }
     }
+    if (!changed && !idleChanged) {
+      // A presence event that touched neither the game nor the idle state (a custom status edit,
+      // a Spotify update, mobile to desktop) banked no time, so no rank or server milestone can
+      // have moved. Reconciling the rank is still cheap and repairs a manually removed role; the
+      // server-achievement sweep is not, and the 60s tick runs it for every guild anyway.
+      await reconcileRank(member, oldRank);
+      return;
+    }
   } else {
     const previous = db.stopSession(member.guild.id, member.id, now);
-    if (previous) await announceAchievements(member, evaluateSessionEnd(db, member.guild.id, member.id, previous, now));
+    if (!previous) {
+      // Not playing now and was not playing before — the overwhelming majority of presence events
+      // on a busy server. Same reasoning as above: nothing banked, nothing to sweep for.
+      await reconcileRank(member, oldRank);
+      return;
+    }
+    await announceAchievements(member, evaluateSessionEnd(db, member.guild.id, member.id, previous, now));
   }
   await reconcileRank(member, oldRank);
   await checkServerAchievements(member.guild).catch(console.error);
@@ -551,7 +594,7 @@ async function setupRoles(guild) {
 async function syncGuildRanks(guild) {
   await guild.members.fetch();
   for (const member of guild.members.cache.values()) {
-    await syncRank(member).catch((error) => console.error(`Could not sync rank for ${member.user.tag}:`, error));
+    await syncRank(member).catch((error) => console.error(`Could not sync rank for ${memberRef(member.id)}:`, error));
   }
 }
 
@@ -860,13 +903,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // Persist elapsed time and re-evaluate ranks/achievements even if Discord did not send a new presence event.
 setInterval(async () => {
   const now = Date.now();
-  for (const { guild_id, user_id, elapsed_seconds, started_at, game_name } of db.checkpointAll(now)) {
+  for (const { guild_id, user_id, elapsed_seconds, started_at, game_name, paused_ms } of db.checkpointAll(now)) {
     const guild = client.guilds.cache.get(guild_id);
     const member = guild?.members.cache.get(user_id);
     const oldRank = rankForSeconds(db.getTotalSeconds(guild_id, user_id) - elapsed_seconds);
     if (member) {
       await reconcileRank(member, oldRank).catch(console.error);
-      const unlocked = evaluateOngoingSession(db, guild_id, user_id, game_name, started_at, now);
+      const unlocked = evaluateOngoingSession(db, guild_id, user_id, game_name, started_at, now, paused_ms);
+      await announceAchievements(member, unlocked).catch(console.error);
+    }
+  }
+  // Retire sessions that have run past the cap. Anyone genuinely still playing is picked up again
+  // by their next presence event; nobody keeps banking hours off a game left running unattended.
+  if (MAX_SESSION_MS) {
+    for (const { guildId, userId, completed } of db.closeSessionsExceeding(MAX_SESSION_MS, now)) {
+      const member = client.guilds.cache.get(guildId)?.members.cache.get(userId);
+      if (!member) continue;
+      const unlocked = evaluateSessionEnd(db, guildId, userId, completed, now);
       await announceAchievements(member, unlocked).catch(console.error);
     }
   }
