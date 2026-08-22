@@ -199,18 +199,13 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     SELECT COUNT(*) AS count FROM game_stats
     WHERE guild_id = ? AND user_id = ? AND total_seconds >= ?
   `);
-  // Per-game seconds for today, so the same-day variety tiers can apply that same "real time in
-  // it" bar. Attributed by started_at, matching every other today-scoped query here.
-  const getGameSecondsTodayStmt = db.prepare(`
+  // Per-game seconds since a cutoff, so any tier needing "real time in it" can pick its own window
+  // and its own bar — a day for the variety pair, a rolling three hours for Speedrunner. Sessions
+  // are attributed by started_at, matching every other windowed query here.
+  const getGameSecondsSinceStmt = db.prepare(`
     SELECT game_name, SUM(duration_seconds) AS total_seconds FROM play_sessions
     WHERE guild_id = ? AND user_id = ? AND started_at >= ?
     GROUP BY game_name
-  `);
-  const getGamesTouchedSinceStmt = db.prepare(`
-    SELECT COUNT(DISTINCT game_name) AS count FROM (
-      SELECT game_name FROM play_sessions WHERE guild_id = ? AND user_id = ? AND started_at >= ?
-      UNION SELECT game_name FROM active_sessions WHERE guild_id = ? AND user_id = ? AND started_at >= ?
-    )
   `);
   const getGameStartCountSinceStmt = db.prepare(`
     SELECT COUNT(*) AS count FROM (
@@ -645,9 +640,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     getTrackedPlayerCount: (guildId) => countTrackedPlayersStmt.get(guildId, guildId).count,
     getSubstantialGameCount: (guildId, userId, minSeconds) =>
       getSubstantialGameCountStmt.get(guildId, userId, minSeconds).count,
-    getGameSecondsToday: (guildId, userId, dayStartMs) => getGameSecondsTodayStmt.all(guildId, userId, dayStartMs),
-    getGamesTouchedSince: (guildId, userId, sinceMs) =>
-      getGamesTouchedSinceStmt.get(guildId, userId, sinceMs, guildId, userId, sinceMs).count,
+    getGameSecondsSince: (guildId, userId, sinceMs) => getGameSecondsSinceStmt.all(guildId, userId, sinceMs),
     getGameStartCountSince: (guildId, userId, gameName, sinceMs) =>
       getGameStartCountSinceStmt.get(guildId, userId, gameName, sinceMs, guildId, userId, gameName, sinceMs).count,
     getLastCompletedSession: (guildId, userId) => getLastCompletedSessionStmt.get(guildId, userId) ?? null,

@@ -30,10 +30,11 @@ export const ACHIEVEMENTS = [
   { id: 'the_backlog', emoji: '📚', name: 'The Backlog', description: 'Put an hour into each of 50 different games.' },
   { id: 'send_help', emoji: '🆘', name: 'Send Help', description: 'Put an hour into each of 75 different games.' },
 
-  // Variety — how many different games in a single day. Speedrunner and The Speed Dating count
-  // games regardless of how briefly they ran; the other two need a real hour in each.
+  // Variety — how many different games in a single day. Each has its own bar for what counts as
+  // having played something: an hour for the two day-scoped ones, ten minutes for Speedrunner's
+  // tighter window. Only The Speed Dating counts a game however briefly it ran, by design.
   { id: 'variety_is_overrated', emoji: '🎲', name: 'Variety Is Overrated', description: 'Play 3 different games for an hour each in one day.' },
-  { id: 'speedrunner', emoji: '🏃', name: 'Speedrunner', description: 'Start 5 different games within a 3-hour window.' },
+  { id: 'speedrunner', emoji: '🏃', name: 'Speedrunner', description: 'Play 5 different games for 10 minutes each within 3 hours.' },
   { id: 'identity_crisis', emoji: '🌀', name: 'Identity Crisis', description: 'Play 6 different games for an hour each in one day.' },
   { id: 'speed_dating', emoji: '💔', name: 'The Speed Dating', description: 'Play 4 different games in one day, none longer than 10 minutes.' },
 
@@ -119,10 +120,19 @@ const QUALIFYING_SESSION_SECONDS = 3600;
  *
  * Without this, every game-count tier — the collection ladder and the same-day variety pair alike —
  * could be cleared by launching things for a second each, which is the opposite of what they are
- * meant to reward. Speedrunner and The Speed Dating deliberately opt out: both are *about* churn,
- * and gating them here would make the first impossible and the second self-contradictory.
+ * meant to reward. Speedrunner sets its own, lower bar below, because an hour per game cannot fit
+ * five games into three hours. The Speed Dating opts out entirely: it rewards games *not* played
+ * for long, so any minimum would contradict it.
  */
 export const COUNTS_AS_PLAYED_SECONDS = 3600;
+/**
+ * Speedrunner's own pair: five games inside a rolling three hours, each played for at least ten
+ * minutes. Ten is deliberately the same number The Speed Dating treats as its ceiling, so the two
+ * cannot describe the same game — one needs 10 minutes or more, the other strictly less.
+ */
+const SPEEDRUN_WINDOW_MS = 3 * HOUR;
+const SPEEDRUN_MIN_SECONDS = 10 * 60;
+const SPEEDRUN_GAMES_NEEDED = 5;
 const COLLECTION_TIERS = [
   [10, 'collector'],
   [25, 'game_hoarder'],
@@ -179,19 +189,35 @@ function evaluateGameCountTiers(db, guildId, userId, now, unlocked, running = nu
     if (distinctGames >= threshold) tryUnlock(db, guildId, userId, achievementId, now, unlocked);
   }
 
-  const secondsByGame = new Map(
-    db.getGameSecondsToday(guildId, userId, dayStartUTC(now)).map((row) => [row.game_name, row.total_seconds]),
-  );
-  if (running) {
-    secondsByGame.set(running.gameName, (secondsByGame.get(running.gameName) ?? 0) + running.seconds);
-  }
-  let gamesToday = 0;
-  for (const seconds of secondsByGame.values()) {
-    if (seconds >= COUNTS_AS_PLAYED_SECONDS) gamesToday++;
-  }
+  const gamesToday = gamesMeeting(db, guildId, userId, dayStartUTC(now), COUNTS_AS_PLAYED_SECONDS, running);
   for (const [threshold, achievementId] of SAME_DAY_VARIETY_TIERS) {
     if (gamesToday >= threshold) tryUnlock(db, guildId, userId, achievementId, now, unlocked);
   }
+
+  const gamesInWindow = gamesMeeting(db, guildId, userId, now - SPEEDRUN_WINDOW_MS, SPEEDRUN_MIN_SECONDS, running);
+  if (gamesInWindow >= SPEEDRUN_GAMES_NEEDED) tryUnlock(db, guildId, userId, 'speedrunner', now, unlocked);
+}
+
+/**
+ * How many distinct games have at least `minSeconds` in them since `sinceMs`, counting time
+ * cumulatively across sessions rather than demanding one unbroken sitting.
+ *
+ * A session still in flight is not in play_sessions yet, so `running` folds it in — but only when
+ * it started inside the window, since completed sessions are attributed by their start time and a
+ * session predating the cutoff is not part of it.
+ */
+function gamesMeeting(db, guildId, userId, sinceMs, minSeconds, running) {
+  const secondsByGame = new Map(
+    db.getGameSecondsSince(guildId, userId, sinceMs).map((row) => [row.game_name, row.total_seconds]),
+  );
+  if (running && running.startedAt >= sinceMs) {
+    secondsByGame.set(running.gameName, (secondsByGame.get(running.gameName) ?? 0) + running.seconds);
+  }
+  let count = 0;
+  for (const seconds of secondsByGame.values()) {
+    if (seconds >= minSeconds) count++;
+  }
+  return count;
 }
 
 /** Call right after a member starts a new game session (session actually changed). */
@@ -229,9 +255,6 @@ export function evaluateSessionStart(db, guildId, userId, gameName, now) {
   }
   if (db.getGameStartCountSince(guildId, userId, gameName, now - 10 * MINUTE) >= 5) {
     tryUnlock(db, guildId, userId, 'technical_difficulties', now, unlocked);
-  }
-  if (db.getGamesTouchedSince(guildId, userId, now - 3 * HOUR) >= 5) {
-    tryUnlock(db, guildId, userId, 'speedrunner', now, unlocked);
   }
   // Closing a game and opening another usually reaches us as two separate presence updates with
   // "playing nothing" in between, so the swap is rarely visible as one event — check the last
@@ -362,12 +385,13 @@ export function evaluateOngoingSession(db, guildId, userId, gameName, startedAt,
     if (priorQualifying + 1 >= 3) tryUnlock(db, guildId, userId, 'surely_not', now, unlocked);
   }
   // This is the tick where a game usually earns its place in the count, so the tiers are checked
-  // here rather than waiting for the session to end. A session that began before midnight is not
-  // folded into today — completed sessions are attributed by their start day, and this matches.
-  const running = startedAt >= dayStartUTC(now)
-    ? { gameName, seconds: Math.floor(elapsedMs / 1000) }
-    : null;
-  evaluateGameCountTiers(db, guildId, userId, now, unlocked, running);
+  // here rather than waiting for the session to end. Each window decides for itself whether this
+  // session started early enough to belong to it — see gamesMeeting.
+  evaluateGameCountTiers(db, guildId, userId, now, unlocked, {
+    gameName,
+    startedAt,
+    seconds: Math.floor(elapsedMs / 1000),
+  });
   return unlocked;
 }
 
