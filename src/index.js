@@ -2,7 +2,7 @@ import 'dotenv/config';
 import {
   Client, Events, GatewayIntentBits, ActivityType, PermissionFlagsBits, SlashCommandBuilder, escapeMarkdown,
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle,
-  StringSelectMenuBuilder, MessageFlags,
+  StringSelectMenuBuilder, UserSelectMenuBuilder, MessageFlags,
 } from 'discord.js';
 import { openDatabase } from './database.js';
 import { memberRef } from './log.js';
@@ -10,7 +10,7 @@ import { RANKS, RANK_HOURS, formatHours, formatPlayTime, levelUpMessageTemplate,
 import {
   ACHIEVEMENTS, achievementById, getUnlockedAchievements, evaluateSessionStart, evaluateSessionEnd,
   evaluateOngoingSession, evaluateSocialTiers, evaluateDuoDays, evaluateTouchGrass,
-  LONGEST_SESSION_ACHIEVEMENT_MS,
+  LONGEST_SESSION_ACHIEVEMENT_MS, COUNTS_AS_PLAYED_SECONDS,
 } from './achievements.js';
 import {
   SERVER_ACHIEVEMENTS, serverAchievementById, getUnlockedServerAchievements, evaluateServerAchievements,
@@ -313,6 +313,16 @@ function buildTimezoneSelectRow(customId) {
     new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Choose a timezone for this event')
       .addOptions(EVENT_TIMEZONE_PRESETS.map((preset) => ({ label: preset.label, value: preset.value }))),
   )];
+}
+
+// minValues(0) lets the creator submit with nobody picked (a deliberate "skip inviting" action),
+// distinct from just never touching the picker at all — both end up notifying nobody either way.
+// maxValues/prefilled are both capped at 25 upstream (Discord's hard limit on a select menu).
+function buildEventInviteRow(eventId, prefilledUserIds) {
+  const select = new UserSelectMenuBuilder().setCustomId(`event:invite:${eventId}`)
+    .setPlaceholder('Invite specific members (optional)').setMinValues(0).setMaxValues(25);
+  if (prefilledUserIds.length) select.setDefaultUsers(prefilledUserIds);
+  return [new ActionRowBuilder().addComponents(select)];
 }
 
 function timezoneLabelFor(zone) {
@@ -673,7 +683,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
       db.upsertEventSignup(eventId, interaction.user.id, action);
       const signups = db.getEventSignups(eventId);
-      await interaction.update({ embeds: [buildEventEmbed(event, signups)], components: buildEventComponents(eventId) });
+      // Drop the responder from the invite-ping line (if they're on it) so someone who has already
+      // answered — going, maybe, or declined — never gets pinged by it again. content persists
+      // across interaction.update() unless overwritten, so this has to be explicit, not omitted.
+      const content = interaction.message.content
+        ? interaction.message.content.replace(new RegExp(`<@!?${interaction.user.id}>\\s*`), '').trim() || null
+        : null;
+      await interaction.update({ content, embeds: [buildEventEmbed(event, signups)], components: buildEventComponents(eventId) });
       return;
     }
     if (interaction.isStringSelectMenu() && interaction.customId === 'event:manage') {
@@ -685,6 +701,31 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
       const signups = db.getEventSignups(eventId);
       await interaction.update({ content: null, embeds: [buildEventEmbed(event, signups)], components: buildEventComponents(eventId) });
+      return;
+    }
+    if (interaction.isUserSelectMenu() && interaction.customId.startsWith('event:invite:')) {
+      const eventId = Number(interaction.customId.split(':')[2]);
+      const event = db.getEvent(eventId);
+      if (!event) {
+        await interaction.update({ content: 'This event no longer exists.', components: [] });
+        return;
+      }
+      if (interaction.values.length) {
+        const guild = client.guilds.cache.get(event.guild_id);
+        const channel = guild?.channels.cache.get(event.channel_id);
+        const original = event.message_id && channel?.isTextBased()
+          ? await channel.messages.fetch(event.message_id).catch(() => null)
+          : null;
+        // Pings must live in the message's content, not the embed — mentions inside an embed field
+        // (like the Going list above) render but never actually notify anyone.
+        if (original) await original.edit({ content: interaction.values.map((id) => `<@${id}>`).join(' ') }).catch(() => {});
+      }
+      await interaction.update({
+        content: interaction.values.length
+          ? `Notified ${interaction.values.length} member${interaction.values.length === 1 ? '' : 's'}.`
+          : 'Nobody selected — no one was notified.',
+        components: [],
+      });
       return;
     }
     if (interaction.isStringSelectMenu() && interaction.customId === 'event:tzcreate') {
@@ -729,6 +770,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ embeds: [buildEventEmbed(event, [])], components: buildEventComponents(eventId) });
       const reply = await interaction.fetchReply().catch(() => null);
       if (reply) db.setEventMessageId(eventId, reply.id);
+
+      const prefilled = game ? db.getPlayersForGame(interaction.guild.id, game, COUNTS_AS_PLAYED_SECONDS) : [];
+      await interaction.followUp({
+        content: 'Want to notify specific members about this event? '
+          + (prefilled.length ? 'Pre-filled with members who’ve already played the game — add or remove anyone, or clear it to skip.' : 'Pick anyone to ping, or leave it empty to skip.'),
+        components: buildEventInviteRow(eventId, prefilled),
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => {});
       return;
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('event:editmodal:')) {
@@ -963,7 +1012,12 @@ setInterval(async () => {
     const channel = guild?.channels.cache.get(event.channel_id);
     if (!channel?.isTextBased()) continue;
     const mentions = going.map((row) => `<@${row.user_id}>`).join(' ');
-    await channel.send(`${text}\n${mentions}`)
+    // Same jump-link shape /event list uses — a masked link (bots can use them in plain content)
+    // makes the title itself a way back to the buried announcement.
+    const titleText = event.message_id
+      ? `[${event.title}](https://discord.com/channels/${event.guild_id}/${event.channel_id}/${event.message_id})`
+      : event.title;
+    await channel.send(`🔔 ${titleText} ${text}\n${mentions}`)
       .catch((error) => console.error('Could not send event reminder:', error));
   }
   // Clean up events well after they've started so the table doesn't grow unbounded.

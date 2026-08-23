@@ -92,9 +92,11 @@ export function collectDueReminders(db, stagesMinutes, now, options = {}) {
     // "Starting now" only makes sense if we caught it promptly — if a delayed signup meant this
     // fires long after the event began, say nothing rather than announce something false.
     if (minutesRemaining <= 0 && now - event.starts_at > staleMs) continue;
+    // Deliberately just the phrase, not the emoji or title — index.js owns those so it can render
+    // the title as an inline link back to the event rather than plain quoted text.
     const text = minutesRemaining <= 0
-      ? `🔔 "${event.title}" is starting now!`
-      : `🔔 "${event.title}" event starts in ${formatReminderDuration(minutesRemaining)}.`;
+      ? 'is starting now!'
+      : `event starts in ${formatReminderDuration(minutesRemaining)}.`;
     announcements.push({ event, going, text });
   }
   return announcements;

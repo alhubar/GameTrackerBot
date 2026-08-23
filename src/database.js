@@ -349,6 +349,14 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     ON CONFLICT(event_id, user_id) DO UPDATE SET status = excluded.status
   `);
   const getEventSignupsStmt = db.prepare('SELECT user_id, status FROM event_signups WHERE event_id = ?');
+  // Case-insensitive because the game name here comes from event creation's free-text field, while
+  // game_stats rows come from whatever spelling Discord's presence activity reported — a mismatched
+  // case shouldn't mean an empty prefill. Capped at 25 (Discord's hard limit on a select menu),
+  // biased toward whoever has put in the most time so a cut-off crowd loses its least invested first.
+  const getPlayersForGameStmt = db.prepare(`
+    SELECT user_id FROM game_stats WHERE guild_id = ? AND game_name = ? COLLATE NOCASE AND total_seconds >= ?
+    ORDER BY total_seconds DESC LIMIT 25
+  `);
   const getUpcomingEventsStmt = db.prepare('SELECT * FROM events WHERE starts_at > ? ORDER BY starts_at');
   const getUpcomingEventsForGuildStmt = db.prepare('SELECT * FROM events WHERE guild_id = ? AND starts_at > ? ORDER BY starts_at LIMIT ?');
   const getStaleEventsStmt = db.prepare('SELECT id FROM events WHERE starts_at < ?');
@@ -723,6 +731,8 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     },
     upsertEventSignup: (eventId, userId, status) => upsertEventSignupStmt.run(eventId, userId, status),
     getEventSignups: (eventId) => getEventSignupsStmt.all(eventId),
+    getPlayersForGame: (guildId, gameName, minSeconds) =>
+      getPlayersForGameStmt.all(guildId, gameName, minSeconds).map((row) => row.user_id),
     getUpcomingEvents: (afterMs) => getUpcomingEventsStmt.all(afterMs),
     getUpcomingEventsForGuild: (guildId, afterMs, limit = 10) => getUpcomingEventsForGuildStmt.all(guildId, afterMs, limit),
     getStaleEvents: (beforeMs) => getStaleEventsStmt.all(beforeMs).map((row) => row.id),
