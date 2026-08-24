@@ -18,7 +18,11 @@ export async function handleEventList(interaction) {
   }
   const lines = upcoming.map((event) => {
     const unixSeconds = Math.floor(event.starts_at / 1000);
-    const link = event.message_id ? `https://discord.com/channels/${event.guild_id}/${event.channel_id}/${event.message_id}` : null;
+    // Only offer the jump link while the channel is still there — a link into a deleted channel is
+    // a dead end, and handing someone one is worse than omitting it. The message itself could also
+    // be gone, but checking that costs a fetch per row, which is too much for a ten-row list.
+    const reachable = event.message_id && interaction.guild.channels.cache.has(event.channel_id);
+    const link = reachable ? `https://discord.com/channels/${event.guild_id}/${event.channel_id}/${event.message_id}` : null;
     const going = db.getEventSignups(event.id).filter((row) => row.status === 'going').length;
     return `**${event.title}** — <t:${unixSeconds}:F> (<t:${unixSeconds}:R>) — ${going} going${link ? ` — [jump](${link})` : ''}`;
   });

@@ -110,8 +110,27 @@ setInterval(async () => {
     await channel.send(`🔔 ${titleText} ${text}\n${mentions}`)
       .catch((error) => console.error('Could not send event reminder:', error));
   }
-  // Clean up events well after they've started so the table doesn't grow unbounded.
-  for (const eventId of db.getStaleEvents(now - 24 * 60 * 60_000)) db.deleteEvent(eventId);
+  // Clean up events well after they've started so the table doesn't grow unbounded, and take the
+  // announcement message with them. Without this the post sits in the channel indefinitely with
+  // live-looking RSVP buttons that answer "This event no longer exists" once the row is gone.
+  //
+  // The announcement is the bot's own interaction reply, so deleting it needs no Manage Messages.
+  // The row is dropped whether or not the message went, deliberately: retrying a message that
+  // cannot be deleted would re-run every 60 seconds forever, and one orphaned post is a far
+  // smaller problem than a cleanup loop that never finishes. Same at-most-once shape as reminders.
+  for (const event of db.getStaleEvents(now - 24 * 60 * 60_000)) {
+    if (event.message_id) {
+      const channel = client.guilds.cache.get(event.guild_id)?.channels.cache.get(event.channel_id);
+      if (channel?.isTextBased()) {
+        const message = await channel.messages.fetch(event.message_id).catch(() => null);
+        if (message) {
+          await message.delete()
+            .catch((error) => console.error('Could not delete the expired event message:', error));
+        }
+      }
+    }
+    db.deleteEvent(event.id);
+  }
 }, 60_000).unref();
 
 function shutdown() {

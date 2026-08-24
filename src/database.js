@@ -375,7 +375,9 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   `);
   const getUpcomingEventsStmt = db.prepare('SELECT * FROM events WHERE starts_at > ? ORDER BY starts_at');
   const getUpcomingEventsForGuildStmt = db.prepare('SELECT * FROM events WHERE guild_id = ? AND starts_at > ? ORDER BY starts_at LIMIT ?');
-  const getStaleEventsStmt = db.prepare('SELECT id FROM events WHERE starts_at < ?');
+  // Full rows, not just ids: expiring an event also deletes its announcement message, which
+  // needs channel_id and message_id read before the row goes.
+  const getStaleEventsStmt = db.prepare('SELECT * FROM events WHERE starts_at < ?');
   const hasReminderSentStmt = db.prepare('SELECT 1 FROM event_reminders_sent WHERE event_id = ? AND stage_minutes = ?');
   const getLastReminderSentAtStmt = db.prepare('SELECT MAX(sent_at) AS last FROM event_reminders_sent WHERE event_id = ?');
   const markReminderSentStmt = db.prepare(`
@@ -776,7 +778,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       getPlayersForGameStmt.all(guildId, gameName, minSeconds).map((row) => row.user_id),
     getUpcomingEvents: (afterMs) => getUpcomingEventsStmt.all(afterMs),
     getUpcomingEventsForGuild: (guildId, afterMs, limit = 10) => getUpcomingEventsForGuildStmt.all(guildId, afterMs, limit),
-    getStaleEvents: (beforeMs) => getStaleEventsStmt.all(beforeMs).map((row) => row.id),
+    getStaleEvents: (beforeMs) => getStaleEventsStmt.all(beforeMs),
     hasReminderSent: (eventId, stageMinutes) => !!hasReminderSentStmt.get(eventId, stageMinutes),
     getLastReminderSentAt: (eventId) => getLastReminderSentAtStmt.get(eventId).last ?? null,
     markReminderSent: (eventId, stageMinutes, now = Date.now()) => markReminderSentStmt.run(eventId, stageMinutes, now),

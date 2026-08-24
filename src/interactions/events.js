@@ -1,6 +1,7 @@
 import {
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder,
   TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, UserSelectMenuBuilder, MessageFlags,
+  PermissionFlagsBits,
 } from 'discord.js';
 import { db, client } from '../runtime.js';
 import { CARD_ACCENT_COLOR, EVENT_TIMEZONE_PRESETS } from '../config.js';
@@ -18,6 +19,21 @@ import { parseEventTime, formatEventTime } from '../events.js';
  * The scheduling rules themselves live in `src/events.js`, deliberately free of Discord calls so
  * they stay testable; this module only renders and dispatches.
  */
+
+/**
+ * Who may edit or delete an event: its creator, or anyone with Manage Server.
+ *
+ * The creator check alone left an event stranded the moment its creator left the guild — nobody,
+ * not even the owner, could correct or cancel it, while RSVPs kept working and people kept signing
+ * up for something no one could fix. It self-cleans 24h after its start time, which is no help at
+ * all for an event scheduled a month out.
+ */
+function canManageEvent(interaction, event) {
+  if (interaction.user.id === event.creator_id) return true;
+  return interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) === true;
+}
+
+const CANNOT_MANAGE = 'Only the person who created this event, or someone with Manage Server, can do that.';
 
 export function buildEventEmbed(event, signups) {
   const going = signups.filter((row) => row.status === 'going');
@@ -113,8 +129,8 @@ export async function handleEventButton(interaction) {
     return;
   }
   if (action === 'edit' || action === 'delete') {
-    if (interaction.user.id !== event.creator_id) {
-      await interaction.reply({ content: 'Only the person who created this event can do that.', flags: MessageFlags.Ephemeral });
+    if (!canManageEvent(interaction, event)) {
+      await interaction.reply({ content: CANNOT_MANAGE, flags: MessageFlags.Ephemeral });
       return;
     }
     if (action === 'delete') {
@@ -122,7 +138,7 @@ export async function handleEventButton(interaction) {
       const cancelledEmbed = new EmbedBuilder()
         .setColor(0x99AAB5)
         .setTitle(`~~${event.title}~~ (cancelled)`)
-        .setDescription('This event was cancelled by its creator.');
+        .setDescription('This event was cancelled.');
       await syncOriginalEventMessage(event, interaction, cancelledEmbed, []);
       await interaction.update({ embeds: [cancelledEmbed], components: [] });
       return;
@@ -241,8 +257,8 @@ export async function handleEventEditModal(interaction) {
     await interaction.reply({ content: 'This event no longer exists.', flags: MessageFlags.Ephemeral });
     return;
   }
-  if (interaction.user.id !== event.creator_id) {
-    await interaction.reply({ content: 'Only the person who created this event can do that.', flags: MessageFlags.Ephemeral });
+  if (!canManageEvent(interaction, event)) {
+    await interaction.reply({ content: CANNOT_MANAGE, flags: MessageFlags.Ephemeral });
     return;
   }
   const title = interaction.fields.getTextInputValue('title');

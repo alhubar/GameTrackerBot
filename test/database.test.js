@@ -401,8 +401,20 @@ describe('events', () => {
     const old = db.createEvent(GUILD, 'chan', 'creator', 'Old', null, null, T0 - 2 * DAY, T0 - 3 * DAY);
     const future = db.createEvent(GUILD, 'chan', 'creator', 'Future', null, null, T0 + DAY, T0);
     const stale = db.getStaleEvents(T0 - DAY);
-    assert.ok(stale.includes(old));
-    assert.ok(!stale.includes(future));
+    assert.ok(stale.some((event) => event.id === old));
+    assert.ok(!stale.some((event) => event.id === future));
+    // The row carries what expiry needs to delete the announcement message, not just the id.
+    const staleRow = stale.find((event) => event.id === old);
+    assert.equal(staleRow.guild_id, GUILD);
+    assert.equal(staleRow.channel_id, 'chan');
+    assert.equal(staleRow.message_id, null);
+  });
+
+  test('an expiring event still carries its message id for cleanup', () => {
+    const id = db.createEvent(GUILD, 'chan', 'creator', 'Old', null, null, T0 - 2 * DAY, T0 - 3 * DAY);
+    db.setEventMessageId(id, '987654321');
+    const staleRow = db.getStaleEvents(T0 - DAY).find((event) => event.id === id);
+    assert.equal(staleRow.message_id, '987654321');
   });
 
   test('message ids round-trip for jump links', () => {
