@@ -39,7 +39,7 @@ You can customize every announcement independently with `LEVEL_UP_MESSAGE_1` thr
 4. In the Discord Developer Portal, enable **Presence Intent** and **Server Members Intent** under **Bot → Privileged Gateway Intents**.
 5. Invite the bot with the `bot` and `applications.commands` scopes. Give it **Manage Roles**, and put its role above the tracker roles in the server role list.
 6. Start it with `npm start`.
-7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`.
+7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`. Administrators also get `/health` — see [Checking the bot is alive](#checking-the-bot-is-alive).
 
 `data/tracker.sqlite` is created automatically. Back it up if you want to preserve history when moving the bot.
 
@@ -67,6 +67,10 @@ The bot records each completed game session in its local SQLite database: the pl
 
 `/server` shows server-wide tracked players, total gaming time, most-played game, most-active player, and distinct games tracked. Detailed per-game history starts when this version is deployed; Discord does not make historic activity available for recovery.
 
+**Server records** appear on both `/server` and the `/stats` card's Server tab: the longest single session, the largest gaming group, and the biggest game collection. Each is deliberately something no other command surfaces — nothing else shows how long a single sitting ran, how many people play one game, or who has the widest library, so a record adds information rather than restating the list above it. Unlike achievements, a record is not permanent — it names whoever holds it right now and changes hands the moment somebody beats it, so there is nothing to unlock and no announcement when one moves. Records a server has not set yet are simply omitted rather than shown empty.
+
+The last two — the largest group and the biggest collection — only count a game once someone has put a real hour into it, the same bar the server milestones use, so a game launched for a minute never counts toward either. Note that the **Games played** figure on a member's own `/stats` card is a plain count of everything they have ever launched and applies no such bar, so the two numbers are answering different questions and will not match. The longest-session record can only be read from recorded sessions, so on a database that predates per-session history it starts from the day that history began rather than the server's first day.
+
 ## Achievements
 
 The bot awards personal achievements across a wide range of play patterns. What they are and what triggers them is intentionally not documented here, and there's no in-bot command that lists the locked ones either — so unlocking one is a surprise. If you want the full list (to tune something, or just to peek), it's in `src/achievements.js`.
@@ -85,9 +89,9 @@ Unlocks post a standalone banner to `ACHIEVEMENT_CHANNEL` (same channel and togg
 
 ## Stats card
 
-`/stats [member]` posts an interactive embed with five tabs — Statistics, Games, Achievements, Leaderboard, and Server — click a button to switch views in place. Statistics is the default view when the command runs. The Achievements tab lists what that member has actually unlocked (name, emoji, and description — no spoilers for what's still locked); the Leaderboard tab has an All-Time page and a This Month page; the Server tab shows server-wide stats plus the server achievement list. All three paginate. Only the member who ran the command can use its buttons; anyone else clicking gets a private reminder to run their own.
+`/stats [member]` posts an interactive embed with five tabs — Statistics, Games, Achievements, Leaderboard, and Server — click a button to switch views in place. Statistics is the default view when the command runs. The Achievements tab lists what that member has actually unlocked (name, emoji, and description — no spoilers for what's still locked); the Leaderboard tab has an All-Time page and a This Month page; the Server tab shows server-wide stats, the server records, plus the server achievement list. All three paginate. Only the member who ran the command can use its buttons; anyone else clicking gets a private reminder to run their own.
 
-`/leaderboard` and `/server` still work as standalone plain-text commands too, for a quick look without opening the card. `/leaderboard` now shows both the all-time and this-month totals in one reply. `/server` shows the top 3 most active players instead of just one, plus the server achievement list.
+`/leaderboard` and `/server` still work as standalone plain-text commands too, for a quick look without opening the card. `/leaderboard` now shows both the all-time and this-month totals in one reply. `/server` shows the top 3 most active players instead of just one, plus the server records and the server achievement list.
 
 Achievement unlocks (personal and server-wide) post as embeds now instead of plain messages — gold-colored, with the unlocking player's avatar (or the server's icon for server achievements) as the thumbnail.
 
@@ -106,6 +110,55 @@ The winner also receives a role — `Champion of the Realm` by default — which
 Each period is announced exactly once — the period is recorded after posting, so restarting the bot part-way through cannot repost it. That includes the unclaimed weeks, so they are announced once and not repeated.
 
 Setting `RECAP_PERIOD=week` on a quiet server is the quickest way to see one, since the next Monday will produce a recap either way — with a winner if anyone cleared `RECAP_MIN_HOURS`, and the unclaimed card if not.
+
+## Checking the bot is alive
+
+`/health` reports whether tracking is actually running. It is restricted to administrators — Discord hides it from
+everyone else, and the command re-checks the permission itself in case the default was overridden under **Server
+Settings → Integrations**. The reply is private either way.
+
+It exists because of a specific blind spot: this bot deliberately swallows Discord-facing errors so one failing feature
+cannot take the whole process down, which means a stalled gateway connection or a wedged checkpoint loop looks exactly
+like a quiet evening — no crash, no message, playtime silently not accruing. `/health` shows the two ages that tell
+those apart:
+
+- **Presence tracking** — when the last presence event arrived, and how many have arrived this run. Nothing at all
+  after a while usually means the **Presence Intent** is off.
+- **Checkpoint loop** — when the 60-second banking loop last ran. Flagged red if it has missed several ticks.
+
+Alongside those it shows uptime, gateway latency, guild count, whether the database is readable, the number of active
+sessions, tracked players, and how many achievements have been unlocked.
+
+## Maintenance
+
+`npm run db-check` prints a read-only integrity report for the database — impossible session durations, sessions that
+end before they start, orphaned event signups, unlocked achievement ids that no longer exist, rank roles stranded by a
+shortened `RANK_NAMES`, and so on. It opens the file read-only and never writes, so it is safe to run against a live
+database with the bot running. It exits non-zero if it finds an error, so it drops straight into a cron job.
+
+Point it elsewhere with `npm run db-check -- --db path/to/tracker.sqlite`, and add `--verbose` to list the offending
+rows rather than just counting them.
+
+It reports problems and never repairs them, which is deliberate. In particular there is **no rebuild-from-sessions
+mode**: per-session history was added to a schema that already had running totals, so on any database created before
+that change the early hours exist only in the totals and cannot be reconstructed. Recomputing the totals from session
+rows would delete that history and demote members whose rank depends on it. The check reports the size of that gap and
+leaves the numbers alone.
+
+`scripts/preflight-upgrade.js` is the other maintenance tool — it answers what a *new* set of achievement thresholds
+would unlock on an existing database before you deploy them.
+
+## Development
+
+```bash
+npm test         # the full suite (node's built-in test runner — no framework dependency)
+npm run test:watch
+npm run lint     # eslint
+npm run dev      # run the bot with --watch
+```
+
+Every push runs lint plus the suite on Node 20, 22 and 24 via GitHub Actions. The tests state achievement thresholds
+outright, so read them only if you don't mind the spoilers the rest of this file avoids.
 
 ## Events
 

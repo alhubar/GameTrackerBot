@@ -303,7 +303,23 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     WHERE guild_id = ? AND total_seconds >= ?
     GROUP BY game_name ORDER BY players DESC LIMIT 1
   `);
+  // Server records. The longest session can only be read from play_sessions, so it reaches back
+  // exactly as far as that table does and no further — on a database that predates it the record
+  // starts from the migration, not from the server's first day. Nothing else here has that limit:
+  // both game counts come from game_stats, which is cumulative.
+  const getLongestSessionStmt = db.prepare(`
+    SELECT user_id, game_name, duration_seconds FROM play_sessions
+    WHERE guild_id = ? ORDER BY duration_seconds DESC LIMIT 1
+  `);
+  // Same minSeconds bar as the collection ladder, so "most games" here means the same thing it
+  // means on a member's own card. Counting bare launches would let one busy evening beat a library.
+  const getTopCollectorStmt = db.prepare(`
+    SELECT user_id, COUNT(DISTINCT game_name) AS games FROM game_stats
+    WHERE guild_id = ? AND total_seconds >= ?
+    GROUP BY user_id ORDER BY games DESC LIMIT 1
+  `);
   const getConcurrentGameCountStmt = db.prepare('SELECT COUNT(DISTINCT game_name) AS count FROM active_sessions WHERE guild_id = ?');
+  const getActiveSessionCountStmt = db.prepare('SELECT COUNT(*) AS count FROM active_sessions WHERE guild_id = ?');
   const getPlayersAboveSecondsStmt = db.prepare('SELECT COUNT(*) AS count FROM member_stats WHERE guild_id = ? AND total_seconds >= ?');
   const getGuildGamesTodayStmt = db.prepare(`
     SELECT COUNT(DISTINCT game_name) AS count FROM (
@@ -702,7 +718,32 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       getGuildBaseSecondsStmt.get(guildId).total_seconds + getGuildActiveSecondsStmt.get(now, guildId).total_seconds,
     getTopGameByHours: (guildId, now = Date.now()) => getTopGameByHoursStmt.get(guildId, now, guildId) ?? null,
     getTopGameByPlayerCount: (guildId, minSeconds) => getTopGameByPlayerCountStmt.get(guildId, minSeconds) ?? null,
+    /**
+     * The "server records" shown on the /server card. Every field is independently nullable:
+     * a brand-new server has none of them, and a server with play but no game past `minSeconds`
+     * has a longest session but no collector. Callers render only what came back.
+     */
+    getServerRecords(guildId, minSeconds) {
+      return {
+        longestSession: getLongestSessionStmt.get(guildId) ?? null,
+        topGameByPlayers: getTopGameByPlayerCountStmt.get(guildId, minSeconds) ?? null,
+        topCollector: getTopCollectorStmt.get(guildId, minSeconds) ?? null,
+      };
+    },
     getConcurrentGameCount: (guildId) => getConcurrentGameCountStmt.get(guildId).count,
+    getActiveSessionCount: (guildId) => getActiveSessionCountStmt.get(guildId).count,
+    /**
+     * Cheap "is the file still there and readable" probe for /health. Deliberately not an
+     * integrity check — `npm run db-check` is where the expensive verification lives.
+     */
+    ping() {
+      try {
+        db.prepare('SELECT 1').get();
+        return { ok: true, error: null };
+      } catch (error) {
+        return { ok: false, error: error.message };
+      }
+    },
     getPlayersAboveSeconds: (guildId, thresholdSeconds) => getPlayersAboveSecondsStmt.get(guildId, thresholdSeconds).count,
     getGuildGamesToday: (guildId, dayStartMs) => getGuildGamesTodayStmt.get(guildId, dayStartMs, guildId, dayStartMs).count,
     getGuildPlayDates: (guildId) => getGuildPlayDatesStmt.all(guildId, guildId).map((row) => row.day),

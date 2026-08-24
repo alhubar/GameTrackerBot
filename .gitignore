@@ -3,7 +3,9 @@ node_modules/
 data/
 npm-debug.log*
 *.log
-test/
+# test/ is committed on purpose: CI runs the suite on every push, which is the only way a
+# broken achievement evaluator gets caught before it reaches the server. Note the tests do
+# state achievement thresholds, so they are a spoiler README deliberately is not.
 # Local-only preview tools that post to a real Discord server. scripts/preflight-upgrade.js is
 # shipped, since it is read-only and useful to anyone upgrading an existing database.
 scripts/demo-*.js

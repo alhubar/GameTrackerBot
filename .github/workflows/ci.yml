@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A second push to the same branch supersedes the first — no point finishing a run for code that
+# has already been replaced.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor the dependencies support; 24 is what the bot runs on in production.
+        # Testing both catches a syntax feature that works locally and breaks on the older host.
+        node-version: ['20.x', '22.x', '24.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      # `npm ci` rather than `npm install` so a lockfile that has drifted from package.json fails
+      # the build instead of being silently resolved into something nobody tested.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  # The bot's entry point is never imported by the suite (it would connect to Discord), so its
+  # syntax is checked separately. Without this a typo in index.js reaches the server unnoticed.
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+      - name: Syntax-check every source file
+        run: |
+          for file in $(find src scripts -name '*.js'); do
+            node --check "$file" || exit 1
+          done
+          echo "All source files parse."
