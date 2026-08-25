@@ -1,5 +1,20 @@
 import { memberRef } from './log.js';
-import { ACHIEVEMENT_GOLD } from './embeds.js';
+
+/**
+ * The winner badge's colour, deliberately NOT the gold the achievement embeds use.
+ *
+ * The badge sits above every rank role so its colour wins in the member list, which means it is
+ * what a winner's name looks like for the whole period. Gold reads as almost the same yellow as
+ * the fourth rank, so a winner could be mistaken for having that rank. A pale blue sits nearer the
+ * early ranks instead: visible, but not shouting louder than the ranks people actually earned.
+ *
+ * Kept here rather than imported from embeds.js so recolouring the badge never silently recolours
+ * the achievement cards, which is exactly what sharing ACHIEVEMENT_GOLD used to do.
+ *
+ * Only applied when the role is CREATED. A colour changed by hand in Discord afterwards is left
+ * alone, matching how /setup treats rank role colours.
+ */
+export const WINNER_ROLE_COLOR = 0x95FDFF;
 
 /**
  * Takes the badge off everyone, for a period nobody earned. The role itself is left in place so it
@@ -30,7 +45,7 @@ export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = nu
   role ??= await guild.roles.create({
     name: roleName,
     // discord.js 14.22 deprecated the flat `color` in favour of `colors`.
-    colors: { primaryColor: ACHIEVEMENT_GOLD },
+    colors: { primaryColor: WINNER_ROLE_COLOR },
     hoist: true,
     reason: `${roleName} — winner badge`,
   }).catch((error) => {
@@ -39,7 +54,7 @@ export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = nu
   });
   if (!role) return null;
 
-  // Discord creates roles at the bottom, where every rank role sits above and overrides the gold.
+  // Discord creates roles at the bottom, where every rank role sits above and overrides the badge.
   // A member's name takes the colour of their highest coloured role, so the badge has to outrank
   // them — put it directly beneath the bot's own role, the highest slot it is allowed to use.
   if (isNew) {
