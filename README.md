@@ -59,6 +59,8 @@ When someone reaches a new rank, the configured channel automatically receives t
 
 The leaderboard shows each player's rank, server nickname, and compact play time, such as `1. Villager PlayerName — 30m`.
 
+Members who leave the server drop off the leaderboard and off `/server`'s most-active list, but **nothing of theirs is deleted**. Leaving a Discord server is often accidental, so their hours, rank and achievements are kept exactly as they were — rejoin and they reappear at whatever position their playtime earns, with nothing to restore. The rankings are about who is here now; the history is not. Their time does still count toward the server's total gaming time and its server achievements, which are the server's own record rather than a roster.
+
 `/info` shows the active rank list with matching colored-square emojis. New roles receive a default white, green, blue, yellow, orange, red, or purple color; colors you later set in Discord are preserved when you run `/setup` again.
 
 ## Statistics and history

@@ -524,7 +524,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
         gamesPlayed,
       };
     },
-    getServerProfile(guildId, now = Date.now()) {
+    getServerProfile(guildId, now = Date.now(), topPlayersLimit = 3) {
       const activeSeconds = db.prepare(`
         SELECT COALESCE(SUM(CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)), 0) AS total_seconds
         FROM active_sessions WHERE guild_id = ?
@@ -557,8 +557,8 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
           UNION ALL
           SELECT user_id, CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)
           FROM active_sessions WHERE guild_id = ?
-        ) GROUP BY user_id ORDER BY total_seconds DESC LIMIT 3
-      `).all(guildId, now, guildId);
+        ) GROUP BY user_id ORDER BY total_seconds DESC LIMIT ?
+      `).all(guildId, now, guildId, Math.max(1, Math.floor(topPlayersLimit)));
       const gamesTracked = db.prepare(`
         SELECT COUNT(DISTINCT game_name) AS count FROM (
           SELECT game_name FROM game_stats WHERE guild_id = ?
