@@ -38,6 +38,7 @@ const CANNOT_MANAGE = 'Only the person who created this event, or someone with M
 export function buildEventEmbed(event, signups) {
   const going = signups.filter((row) => row.status === 'going');
   const maybe = signups.filter((row) => row.status === 'maybe');
+  const declined = signups.filter((row) => row.status === 'declined');
   const unixSeconds = Math.floor(event.starts_at / 1000);
   const embed = new EmbedBuilder()
     .setColor(CARD_ACCENT_COLOR)
@@ -50,6 +51,7 @@ export function buildEventEmbed(event, signups) {
     value: going.length ? going.map((row) => `<@${row.user_id}>`).join(', ') : 'Nobody yet — be the first!',
   });
   if (maybe.length) embed.addFields({ name: `🤔 Maybe (${maybe.length})`, value: maybe.map((row) => `<@${row.user_id}>`).join(', ') });
+  if (declined.length) embed.addFields({ name: `❌ Can't make it (${declined.length})`, value: declined.map((row) => `<@${row.user_id}>`).join(', ') });
   return embed;
 }
 
