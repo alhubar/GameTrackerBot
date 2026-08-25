@@ -64,6 +64,7 @@ export function buildEventComponents(eventId) {
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`event:edit:${eventId}`).setLabel('✏️ Edit').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`event:resend:${eventId}`).setLabel('🔁 Resend').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`event:delete:${eventId}`).setLabel('🗑️ Delete').setStyle(ButtonStyle.Secondary),
     ),
   ];
@@ -130,7 +131,7 @@ export async function handleEventButton(interaction) {
     await interaction.reply({ content: 'This event no longer exists.', flags: MessageFlags.Ephemeral });
     return;
   }
-  if (action === 'edit' || action === 'delete') {
+  if (action === 'edit' || action === 'delete' || action === 'resend') {
     if (!canManageEvent(interaction, event)) {
       await interaction.reply({ content: CANNOT_MANAGE, flags: MessageFlags.Ephemeral });
       return;
@@ -143,6 +144,38 @@ export async function handleEventButton(interaction) {
         .setDescription('This event was cancelled.');
       await syncOriginalEventMessage(event, interaction, cancelledEmbed, []);
       await interaction.update({ embeds: [cancelledEmbed], components: [] });
+      return;
+    }
+    if (action === 'resend') {
+      const guild = client.guilds.cache.get(event.guild_id);
+      const channel = guild?.channels.cache.get(event.channel_id);
+      if (!channel?.isTextBased()) {
+        await interaction.reply({ content: 'Could not find the channel to resend this event to.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      // The button can be clicked from the live announcement itself or from the ephemeral copy
+      // shown by /event list — only in the former case is the message we're replacing the one
+      // this interaction is attached to, which changes how we have to acknowledge it below.
+      const onOriginal = interaction.message.id === event.message_id;
+      if (onOriginal) await interaction.deferUpdate();
+      const old = onOriginal
+        ? interaction.message
+        : (event.message_id ? await channel.messages.fetch(event.message_id).catch(() => null) : null);
+      const signups = db.getEventSignups(eventId);
+      const newMessage = await channel.send({
+        content: old?.content || undefined,
+        embeds: [buildEventEmbed(event, signups)],
+        components: buildEventComponents(eventId),
+      });
+      db.setEventMessageId(eventId, newMessage.id);
+      if (old) await old.delete().catch(() => {});
+      if (!onOriginal) {
+        await interaction.update({
+          content: 'Resent to the bottom of the channel. 🔁',
+          embeds: [buildEventEmbed(event, signups)],
+          components: buildEventComponents(eventId),
+        });
+      }
       return;
     }
     await interaction.reply({
