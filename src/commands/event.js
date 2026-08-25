@@ -1,6 +1,6 @@
 import { ActionRowBuilder, StringSelectMenuBuilder, MessageFlags } from 'discord.js';
 import { db } from '../runtime.js';
-import { buildTimezoneSelectRow } from '../interactions/events.js';
+import { buildTimezoneSelectRow } from '../interactions/eventViews.js';
 
 export async function handleEventCreate(interaction) {
   await interaction.reply({

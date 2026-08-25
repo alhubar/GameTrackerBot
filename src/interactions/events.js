@@ -1,23 +1,23 @@
-import {
-  EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder,
-  TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, UserSelectMenuBuilder, MessageFlags,
-  PermissionFlagsBits,
-} from 'discord.js';
+import { EmbedBuilder, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { db, client } from '../runtime.js';
-import { CARD_ACCENT_COLOR, EVENT_TIMEZONE_PRESETS } from '../config.js';
 import { COUNTS_AS_PLAYED_SECONDS } from '../achievements.js';
 import { parseEventTime, formatEventTime } from '../events.js';
+import {
+  RSVP_STATUSES, MANAGE_ACTIONS, buildEventEmbed, buildEventComponents, buildEventModal,
+  buildTimezoneSelectRow, buildEventInviteRow, timezoneLabelFor, withoutMention, contentPatchAfterReply,
+  buildEventManagePanel,
+} from './eventViews.js';
 
 /**
- * The `/event` subsystem's Discord surface: embeds, buttons, the timezone select and the create /
- * edit modals, plus the handlers behind them.
+ * The `/event` subsystem's handlers: the button, select and modal dispatch behind the surface
+ * rendered in `eventViews.js`.
  *
  * State rides in the `customId` as `event:<action>[:<eventId>][:<zone>]`. The timezone cannot be a
  * dropdown *inside* a modal, so it is chosen first and then carried through the modal's id — that
  * is why `event:tzcreate` and `event:tzedit:<id>` exist as a separate step.
  *
  * The scheduling rules themselves live in `src/events.js`, deliberately free of Discord calls so
- * they stay testable; this module only renders and dispatches.
+ * they stay testable; this module only dispatches.
  */
 
 /**
@@ -35,92 +35,27 @@ function canManageEvent(interaction, event) {
 
 const CANNOT_MANAGE = 'Only the person who created this event, or someone with Manage Server, can do that.';
 
-export function buildEventEmbed(event, signups) {
-  const going = signups.filter((row) => row.status === 'going');
-  const maybe = signups.filter((row) => row.status === 'maybe');
-  const declined = signups.filter((row) => row.status === 'declined');
-  const unixSeconds = Math.floor(event.starts_at / 1000);
-  const embed = new EmbedBuilder()
-    .setColor(CARD_ACCENT_COLOR)
-    .setTitle(event.title)
-    .addFields({ name: '🗓️ When', value: `<t:${unixSeconds}:F>\n<t:${unixSeconds}:R>`, inline: true });
-  if (event.description) embed.setDescription(event.description);
-  if (event.game_name) embed.addFields({ name: '🎮 Game', value: event.game_name, inline: true });
-  embed.addFields({
-    name: `✅ Going (${going.length})`,
-    value: going.length ? going.map((row) => `<@${row.user_id}>`).join(', ') : 'Nobody yet — be the first!',
-  });
-  if (maybe.length) embed.addFields({ name: `🤔 Maybe (${maybe.length})`, value: maybe.map((row) => `<@${row.user_id}>`).join(', ') });
-  if (declined.length) embed.addFields({ name: `❌ Can't make it (${declined.length})`, value: declined.map((row) => `<@${row.user_id}>`).join(', ') });
-  return embed;
-}
-
-export function buildEventComponents(eventId) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`event:going:${eventId}`).setLabel("I'm in").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`event:maybe:${eventId}`).setLabel('Maybe').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`event:declined:${eventId}`).setLabel("Can't make it").setStyle(ButtonStyle.Danger),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`event:edit:${eventId}`).setLabel('✏️ Edit').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`event:resend:${eventId}`).setLabel('🔁 Resend').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`event:delete:${eventId}`).setLabel('🗑️ Delete').setStyle(ButtonStyle.Secondary),
-    ),
-  ];
-}
-
-export function buildEventModal(customId, title, timezoneLabel, values = {}) {
-  return new ModalBuilder().setCustomId(customId).setTitle(title).addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('title').setLabel('Title').setStyle(TextInputStyle.Short)
-        .setValue(values.title ?? '').setRequired(true),
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('at').setLabel(`Start (DD-MM-YYYY HH:mm), ${timezoneLabel}`).setStyle(TextInputStyle.Short)
-        .setValue(values.at ?? '').setRequired(true),
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('game').setLabel('Game (optional)').setStyle(TextInputStyle.Short)
-        .setValue(values.game ?? '').setRequired(false),
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('description').setLabel('Description (optional)').setStyle(TextInputStyle.Paragraph)
-        .setValue(values.description ?? '').setRequired(false),
-    ),
-  );
-}
-
-export function buildTimezoneSelectRow(customId) {
-  return [new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Choose a timezone for this event')
-      .addOptions(EVENT_TIMEZONE_PRESETS.map((preset) => ({ label: preset.label, value: preset.value }))),
-  )];
-}
-
-// minValues(0) lets the creator submit with nobody picked (a deliberate "skip inviting" action),
-// distinct from just never touching the picker at all — both end up notifying nobody either way.
-// maxValues/prefilled are both capped at 25 upstream (Discord's hard limit on a select menu).
-export function buildEventInviteRow(eventId, prefilledUserIds) {
-  const select = new UserSelectMenuBuilder().setCustomId(`event:invite:${eventId}`)
-    .setPlaceholder('Invite specific members (optional)').setMinValues(0).setMaxValues(25);
-  if (prefilledUserIds.length) select.setDefaultUsers(prefilledUserIds);
-  return [new ActionRowBuilder().addComponents(select)];
-}
-
-export function timezoneLabelFor(zone) {
-  return EVENT_TIMEZONE_PRESETS.find((preset) => preset.value === zone)?.label ?? zone;
-}
-
-/** After an edit/delete triggered somewhere other than the original announcement (e.g. via /event list),
- *  keep the original channel message in sync too, so it doesn't show stale info or dead buttons. */
-export async function syncOriginalEventMessage(event, interaction, embed, components) {
+/**
+ * After an action triggered somewhere other than the original announcement (e.g. via /event list),
+ * keep the original channel message in sync too, so it doesn't show stale info or dead buttons.
+ *
+ * No-ops when the interaction is already attached to the announcement — that message has just been
+ * edited by `interaction.update()` and does not need editing twice.
+ *
+ * `pruneMentionFor` drops one member's ping from the invite line. It has to be handled here rather
+ * than by the caller because the line lives on the announcement, and the caller is by definition
+ * looking at some other copy of the card, whose content is not the same string (usually not any
+ * string at all).
+ */
+export async function syncOriginalEventMessage(event, interaction, embed, components, { pruneMentionFor = null } = {}) {
   if (!event.message_id || event.message_id === interaction.message?.id) return;
   const guild = client.guilds.cache.get(event.guild_id);
   const channel = guild?.channels.cache.get(event.channel_id);
   if (!channel?.isTextBased()) return;
   const original = await channel.messages.fetch(event.message_id).catch(() => null);
-  if (original) await original.edit({ embeds: [embed], components }).catch(() => {});
+  if (!original) return;
+  const patch = pruneMentionFor ? contentPatchAfterReply(original.content, pruneMentionFor) : {};
+  await original.edit({ embeds: [embed], components, ...patch }).catch(() => {});
 }
 
 export async function handleEventButton(interaction) {
@@ -131,9 +66,17 @@ export async function handleEventButton(interaction) {
     await interaction.reply({ content: 'This event no longer exists.', flags: MessageFlags.Ephemeral });
     return;
   }
-  if (action === 'edit' || action === 'delete' || action === 'resend') {
+  if (MANAGE_ACTIONS.includes(action)) {
     if (!canManageEvent(interaction, event)) {
       await interaction.reply({ content: CANNOT_MANAGE, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (action === 'tools') {
+      await interaction.reply({
+        content: `Managing **${event.title}**`,
+        components: buildEventManagePanel(eventId),
+        flags: MessageFlags.Ephemeral,
+      });
       return;
     }
     if (action === 'delete') {
@@ -153,22 +96,55 @@ export async function handleEventButton(interaction) {
         await interaction.reply({ content: 'Could not find the channel to resend this event to.', flags: MessageFlags.Ephemeral });
         return;
       }
-      // The button can be clicked from the live announcement itself or from the ephemeral copy
-      // shown by /event list — only in the former case is the message we're replacing the one
-      // this interaction is attached to, which changes how we have to acknowledge it below.
+      // The announcement was posted as an interaction reply, which needs no SendMessages; the resend
+      // is an ordinary message, which does. Check before acknowledging, while reply() is still
+      // available — past deferUpdate() the router's catch falls to editReply(), which would write
+      // its error over the announcement's own content, taking the invite line with it.
+      const me = guild.members.me;
+      if (me && !channel.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages)) {
+        await interaction.reply({
+          content: 'I can’t post in that channel any more, so I can’t resend this event.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      // The button can be clicked from the live announcement itself — announcements posted before
+      // the ⚙️ Manage panel still carry the inline row — or from an ephemeral surface: the panel,
+      // or the copy /event list renders. Only in the first case is the message we're replacing the
+      // one this interaction is attached to, which changes how we acknowledge it below.
       const onOriginal = interaction.message.id === event.message_id;
       if (onOriginal) await interaction.deferUpdate();
       const old = onOriginal
         ? interaction.message
         : (event.message_id ? await channel.messages.fetch(event.message_id).catch(() => null) : null);
       const signups = db.getEventSignups(eventId);
-      const newMessage = await channel.send({
-        content: old?.content || undefined,
-        embeds: [buildEventEmbed(event, signups)],
-        components: buildEventComponents(eventId),
-      });
+      let newMessage;
+      try {
+        newMessage = await channel.send({
+          // Carried over deliberately: the content is the invite ping line, every responder is
+          // pruned out of it as they answer, so re-posting it pings exactly the people who still
+          // haven't — the point of resending a buried event. It is also the only record of who was
+          // invited (there is no invites table), so dropping it here would lose that outright.
+          content: old?.content || undefined,
+          embeds: [buildEventEmbed(event, signups)],
+          components: buildEventComponents(eventId),
+        });
+      } catch (error) {
+        console.error(`[EVENT] Could not resend event ${eventId} into channel ${event.channel_id}:`, error);
+        const failed = 'Could not post the event again — the old announcement is untouched.';
+        if (onOriginal) await interaction.followUp({ content: failed, flags: MessageFlags.Ephemeral }).catch(() => {});
+        else await interaction.reply({ content: failed, flags: MessageFlags.Ephemeral });
+        return;
+      }
       db.setEventMessageId(eventId, newMessage.id);
-      if (old) await old.delete().catch(() => {});
+      // Removing the superseded post is best-effort and last on purpose: the row already points at
+      // the new message, so failing here leaves a stale duplicate rather than an event nobody can
+      // reach. Swallowing it silently left two live announcements and no trace of why.
+      if (old) {
+        await old.delete().catch((error) => {
+          console.warn(`[EVENT] Resent event ${eventId} as message ${newMessage.id}, but could not delete the old message ${old.id}:`, error);
+        });
+      }
       if (!onOriginal) {
         await interaction.update({
           content: 'Resent to the bottom of the channel. 🔁',
@@ -185,15 +161,32 @@ export async function handleEventButton(interaction) {
     });
     return;
   }
+  // Anything that isn't an RSVP falls through to here, so an id this version doesn't know — a
+  // button from an older announcement, say — would otherwise be written straight into
+  // event_signups as a status. There is no CHECK on that column and the key is (event, member),
+  // so it would silently overwrite a real answer with a junk one.
+  if (!RSVP_STATUSES.includes(action)) {
+    await interaction.reply({
+      content: 'That button no longer works. Open the event again with `/event list`.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
   db.upsertEventSignup(eventId, interaction.user.id, action);
   const signups = db.getEventSignups(eventId);
+  const embed = buildEventEmbed(event, signups);
+  const components = buildEventComponents(eventId);
   // Drop the responder from the invite-ping line (if they're on it) so someone who has already
   // answered — going, maybe, or declined — never gets pinged by it again. content persists
   // across interaction.update() unless overwritten, so this has to be explicit, not omitted.
-  const content = interaction.message.content
-    ? interaction.message.content.replace(new RegExp(`<@!?${interaction.user.id}>\\s*`), '').trim() || null
-    : null;
-  await interaction.update({ content, embeds: [buildEventEmbed(event, signups)], components: buildEventComponents(eventId) });
+  const content = withoutMention(interaction.message.content, interaction.user.id);
+  await interaction.update({ content, embeds: [embed], components });
+  // An RSVP can arrive from the announcement or from the copy /event list renders into an ephemeral
+  // message, and the update above only ever edits whichever was clicked. Without this, answering
+  // from the list left the announcement showing a stale Going list and still carrying the
+  // responder's ping — which a later resend would then fire at someone who had already replied.
+  // Acknowledging first keeps the click instant; the announcement follows a beat later.
+  await syncOriginalEventMessage(event, interaction, embed, components, { pruneMentionFor: interaction.user.id });
 }
 
 export async function handleEventManageSelect(interaction) {
