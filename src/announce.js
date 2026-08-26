@@ -28,6 +28,13 @@ import { eligibleForSilence } from './social.js';
  */
 const SOCIAL_CANDIDATES = 25;
 
+/**
+ * Every badge name, so each one knows which coloured roles above it are its own siblings rather
+ * than a rank about to steal its colour. They deliberately share the slot under the bot's role, so
+ * without this the position warning fires for all of them on every single recap.
+ */
+const BADGE_ROLE_NAMES = [RECAP_WINNER_ROLE, BARD_ROLE, SCRIBE_ROLE, CAVE_DWELLER_ROLE];
+
 /** Everything that turns an unlocked achievement or a finished recap into a Discord message. */
 
 export async function announceAchievements(member, achievementIds) {
@@ -121,6 +128,7 @@ async function settleSocialBadges(guild, recap, championId) {
     }
     await awardBadgeRole(guild, award.user_id, {
       roleName, roleIcon, color,
+      siblingRoleNames: BADGE_ROLE_NAMES,
       reason: `${roleName} — social badge`,
       awardReason: `${roleName} — top of the board last ${range.periodNoun}`,
     }).catch((error) => console.error(`Could not award the ${roleName} role:`, error));
@@ -193,9 +201,12 @@ async function settleCaveDwellers(guild, range) {
     roleName: CAVE_DWELLER_ROLE,
     roleIcon: CAVE_DWELLER_ROLE_ICON,
     color: CAVE_DWELLER_ROLE_COLOR,
-    // The only badge that is not hoisted. Hoisting would carve a permanent, public "inactive"
-    // section into the member list, which is a considerably harsher object than a coloured name.
-    hoist: false,
+    // Hoisted like the rest, so a badge always means its own section in the member list. This
+    // one was unhoisted at first, on the reasoning that a public "inactive" section is a harsher
+    // object than a coloured name — overruled deliberately: a badge nobody can see is not a badge,
+    // and the server that switches this on is asking for it to be visible.
+    hoist: true,
+    siblingRoleNames: BADGE_ROLE_NAMES,
     reason: `${CAVE_DWELLER_ROLE} — inactivity badge`,
     awardReason: `${CAVE_DWELLER_ROLE} — nothing recorded last ${range.periodNoun}`,
   }).catch((error) => console.error('Could not settle the Cave Dweller role:', error));
@@ -240,6 +251,7 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
   const role = await awardWinnerRole(guild, recap.winner.userId, {
     roleName: RECAP_WINNER_ROLE,
     roleIcon: RECAP_WINNER_ROLE_ICON,
+    siblingRoleNames: BADGE_ROLE_NAMES,
   });
 
   if (channel) {

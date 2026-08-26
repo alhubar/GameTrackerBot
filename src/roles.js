@@ -59,17 +59,23 @@ export async function clearWinnerRole(guild, roleName) {
 export const clearBadgeRole = clearWinnerRole;
 
 /**
- * The highest position held by another coloured role this badge would lose to.
+ * The highest coloured role above this badge that would actually steal its colour, or null.
  *
  * Anything coloured sitting above the badge wins the member's name colour, which is the one thing
- * a badge exists to do — so that is exactly the condition worth naming. Roles above the bot's own
- * are ignored: nothing can be done about those, and warning about an admin role every period would
- * only train the reader to skip the message. Bot-managed roles are skipped for the same reason.
+ * a badge exists to do — so that is the condition worth naming. Three exclusions keep it from
+ * crying wolf, and a warning nobody trusts is worse than no warning:
+ *
+ * - **The other badges.** They deliberately share one slot at the top, so each always has siblings
+ *   above it — and it never matters, because nobody holds two.
+ * - **Roles above the bot's own.** Nothing can be done about those from here.
+ * - **Bot-managed roles**, for the same reason.
  */
-function colouredRoleAbove(guild, role) {
+function colouredRoleAbove(guild, role, siblingRoleNames = []) {
+  const siblings = new Set(siblingRoleNames.filter(Boolean));
   const ceiling = guild.members.me?.roles.highest.position ?? Infinity;
   const rivals = [...guild.roles.cache.values()].filter((candidate) => candidate.id !== role.id
     && !candidate.managed
+    && !siblings.has(candidate.name)
     && candidate.color !== 0
     && candidate.position > role.position
     && candidate.position < ceiling);
@@ -85,7 +91,7 @@ function colouredRoleAbove(guild, role) {
  */
 async function ensureBadgeRole(guild, {
   roleName, roleIcon = null, color = WINNER_ROLE_COLOR,
-  hoist = true, reason = `${roleName} — badge`,
+  hoist = true, reason = `${roleName} — badge`, siblingRoleNames = [],
 } = {}) {
   if (!roleName) return null;
   let role = guild.roles.cache.find((candidate) => candidate.name === roleName);
@@ -120,9 +126,9 @@ async function ensureBadgeRole(guild, {
   // Badges land under the bot's role, so the bot needs room above the ranks for all of them. When
   // it does not, they spill below and stop showing — the single most common real-world failure in
   // this bot, and completely silent. Say so plainly rather than leaving it to be noticed.
-  const rival = colouredRoleAbove(guild, role);
+  const rival = colouredRoleAbove(guild, role, siblingRoleNames);
   if (rival !== null) {
-    console.warn(`The ${roleName} badge is at position ${role.position}, below a rank role at `
+    console.warn(`The ${roleName} badge is at position ${role.position}, below a coloured role at `
       + `${rival} — its colour will be overridden. Move the bot's own role higher.`);
   }
 
@@ -182,10 +188,11 @@ export async function removeRoleByName(member, roleName) {
  *
  * Lives here rather than in index.js so the preview script can exercise the real thing.
  */
-export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = null } = {}) {
+export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = null, siblingRoleNames = [] } = {}) {
   return awardBadgeRole(guild, winnerId, {
     roleName,
     roleIcon,
+    siblingRoleNames,
     color: WINNER_ROLE_COLOR,
     reason: `${roleName} — winner badge`,
     awardReason: `${roleName} — gamer of the month`,
