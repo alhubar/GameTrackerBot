@@ -8,6 +8,8 @@ const RECAP_EMPTY_GREY = 0x99AAB5;
 /** The social badges' own card. Deliberately not the gold the playtime recap uses — it sits
  *  directly beneath that card, and matching it would read as one long celebration of one person. */
 const SOCIAL_BADGE_BLUE = 0x5865F2;
+/** How many cave dwellers to name before falling back to "and N more" — a field caps at 1024. */
+const CAVE_DWELLERS_NAMED = 8;
 
 /** The card posted when a member unlocks a personal achievement. */
 export function buildAchievementEmbed(achievement, { displayName, avatarUrl, percentOfPlayers }) {
@@ -103,7 +105,7 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
 export function buildSocialBadgesEmbed(awards, {
   displayNames, range, bardRoleName = null, scribeRoleName = null,
   bardFloorMinutes = 0, scribeFloorMinutes = 0,
-  caveDwellerRoleName = null, caveDwellerCount = null,
+  caveDwellerRoleName = null, caveDwellerIds = null,
 }) {
   const badges = [
     {
@@ -112,7 +114,7 @@ export function buildSocialBadgesEmbed(awards, {
       award: awards.bard,
       label: 'voice',
       floor: bardFloorMinutes,
-      // Voice time is one continuous stretch, so it reads as a duration.
+      citation: 'for speaking a lot',
       describe: (row) => `${formatPlayTime(row.voice_minutes * 60)} in voice`,
       floorText: (floor) => `nobody reached ${formatPlayTime(floor * 60)} in voice`,
     },
@@ -122,14 +124,17 @@ export function buildSocialBadgesEmbed(awards, {
       award: awards.scribe,
       label: 'text',
       floor: scribeFloorMinutes,
-      // Text minutes are a count of separate minutes somebody was typing in, never one stretch —
-      // rendering them as "1h 30m" would claim an hour and a half of continuous typing.
-      describe: (row) => `${row.text_minutes} active ${row.text_minutes === 1 ? 'minute' : 'minutes'} of chat`,
-      floorText: (floor) => `nobody reached ${floor} active minutes of chat`,
+      citation: 'for writing more than most',
+      // Rendered as a duration to match the row above. Strictly these are a *count* of separate
+      // minutes somebody sent a message in, not one unbroken stretch of typing — so this reads as
+      // slightly more continuous than it was. Deliberate: the two rows sitting in different units
+      // was worse, and nobody reads a badge card as a stopwatch.
+      describe: (row) => `${formatPlayTime(row.text_minutes * 60)} in chat`,
+      floorText: (floor) => `nobody reached ${formatPlayTime(floor * 60)} in chat`,
     },
   ].filter((badge) => badge.roleName);
 
-  const showCaveDwellers = caveDwellerRoleName && caveDwellerCount !== null;
+  const showCaveDwellers = caveDwellerRoleName && caveDwellerIds !== null;
   if (!badges.length && !showCaveDwellers) return null;
 
   const nameOf = (userId) => displayNames.get(userId) ?? 'Unknown member';
@@ -140,7 +145,7 @@ export function buildSocialBadgesEmbed(awards, {
   for (const badge of badges) {
     const lines = [];
     if (badge.award) {
-      lines.push(`**${nameOf(badge.award.user_id)}**`, badge.describe(badge.award));
+      lines.push(`Awarded to **${nameOf(badge.award.user_id)}** ${badge.citation}`, badge.describe(badge.award));
     } else {
       lines.push('*Unclaimed*', badge.floor ? `_${badge.floorText(badge.floor)}_` : '_nobody qualified_');
     }
@@ -154,14 +159,19 @@ export function buildSocialBadgesEmbed(awards, {
     embed.addFields({ name: `${badge.emoji} ${badge.roleName}`, value: lines.join('\n'), inline: true });
   }
 
-  // A count, never a list of names. The role is already visible on the members who hold it, and
-  // printing a roll-call of everybody who was absent is a different and much sharper thing than
-  // quietly colouring their name. An empty week is worth saying out loud, and is good news.
+  // Named rather than counted. The role is visible on its holders anyway, so a count was hiding
+  // very little — and the line only works as a joke if it is about somebody.
+  //
+  // Capped all the same: a field is 1024 characters, and a quiet week on a large server would
+  // otherwise drop the whole embed rather than shorten one line.
   if (showCaveDwellers) {
+    const names = caveDwellerIds.map(nameOf);
+    const shown = names.slice(0, CAVE_DWELLERS_NAMED);
+    const rest = names.length - shown.length;
     embed.addFields({
       name: `🕳️ ${caveDwellerRoleName}`,
-      value: caveDwellerCount
-        ? `**${caveDwellerCount}** ${caveDwellerCount === 1 ? 'member' : 'members'}\n_nothing recorded all ${range.periodNoun}_`
+      value: names.length
+        ? `**${shown.join('**, **')}**${rest ? ` _and ${rest} more_` : ''} watching from the shadows`
         : `_Nobody — everyone turned up this ${range.periodNoun}_`,
       inline: true,
     });

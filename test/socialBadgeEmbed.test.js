@@ -29,21 +29,21 @@ const build = (awards, options = {}) => buildSocialBadgesEmbed(
 
 const field = (data, name) => data.fields.find((f) => f.name.includes(name));
 
-test('both badges render with their holder and their own unit', () => {
+test('each badge names its holder and says what it was for', () => {
   const data = build({
     bard: row('alice', { voice: 312 }),
     scribe: row('bob', { text: 90 }),
   });
-  assert.match(field(data, 'Bard').value, /\*\*Alice\*\*/);
+  assert.match(field(data, 'Bard').value, /Awarded to \*\*Alice\*\* for speaking a lot/);
   assert.match(field(data, 'Bard').value, /5h 12m in voice/);
-  assert.match(field(data, 'Scribe').value, /\*\*Bob\*\*/);
-  assert.match(field(data, 'Scribe').value, /90 active minutes of chat/,
-    'text minutes are a count of separate minutes, never a duration');
+  assert.match(field(data, 'Scribe').value, /Awarded to \*\*Bob\*\* for writing more than most/);
+  assert.match(field(data, 'Scribe').value, /1h 30m in chat/);
 });
 
-test('one active minute is not pluralised', () => {
-  const data = build({ scribe: row('bob', { text: 1 }) });
-  assert.match(field(data, 'Scribe').value, /1 active minute of chat/);
+test('both rows read as durations, so the card is in one unit throughout', () => {
+  const data = build({ bard: row('alice', { voice: 61 }), scribe: row('bob', { text: 61 }) });
+  assert.match(field(data, 'Bard').value, /1h 1m in voice/);
+  assert.match(field(data, 'Scribe').value, /1h 1m in chat/);
 });
 
 test('an unclaimed badge says so and names the bar it missed', () => {
@@ -124,28 +124,35 @@ test('a missing alsoTopped map is tolerated', () => {
 
 // ---- Cave Dweller ----------------------------------------------------------------------------
 
-test('cave dwellers are reported as a count, never as a list of names', () => {
+test('cave dwellers are named', () => {
   const data = build({ bard: row('alice', { voice: 90 }) }, {
-    caveDwellerRoleName: 'Cave Dweller', caveDwellerCount: 3,
+    caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: ['bob', 'carol'],
   });
-  const value = field(data, 'Cave Dweller').value;
-  assert.match(value, /\*\*3\*\* members/);
-  assert.doesNotMatch(value, /Alice|Bob|Carol/, 'a roll-call of the absent is a much sharper object');
+  assert.match(field(data, 'Cave Dweller').value, /\*\*Bob\*\*, \*\*Carol\*\* watching from the shadows/);
 });
 
-test('a single cave dweller is not pluralised', () => {
-  const data = build({}, { caveDwellerRoleName: 'Cave Dweller', caveDwellerCount: 1 });
-  assert.match(field(data, 'Cave Dweller').value, /\*\*1\*\* member\n/);
+test('a single cave dweller reads naturally', () => {
+  const data = build({}, { caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: ['alice'] });
+  assert.match(field(data, 'Cave Dweller').value, /\*\*Alice\*\* watching from the shadows/);
+});
+
+test('a long list is trimmed rather than overflowing the field', () => {
+  // Discord caps a field value at 1024 characters; going over drops the whole embed.
+  const many = Array.from({ length: 30 }, (_, i) => `ghost-${i}`);
+  const data = build({}, { caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: many });
+  const value = field(data, 'Cave Dweller').value;
+  assert.match(value, /and 22 more/);
+  assert.ok(value.length < 1024, 'stays inside the field cap');
 });
 
 test('a week where everybody turned up says so, and reads as good news', () => {
-  const data = build({}, { caveDwellerRoleName: 'Cave Dweller', caveDwellerCount: 0 });
+  const data = build({}, { caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: [] });
   assert.match(field(data, 'Cave Dweller').value, /Nobody — everyone turned up this week/);
 });
 
 test('the badge is absent from the card when it is switched off', () => {
   const data = build({ bard: row('alice', { voice: 90 }) }, {
-    caveDwellerRoleName: null, caveDwellerCount: 4,
+    caveDwellerRoleName: null, caveDwellerIds: ["alice","bob","carol","x3"],
   });
   assert.equal(field(data, 'Cave Dweller'), undefined, 'a disabled badge is never mentioned');
 });
@@ -155,7 +162,7 @@ test('a card can be built for cave dwellers alone when the other badges are off'
     { bard: null, scribe: null, alsoTopped: new Map() },
     {
       displayNames: NAMES, range: RANGE, bardRoleName: null, scribeRoleName: null,
-      caveDwellerRoleName: 'Cave Dweller', caveDwellerCount: 2,
+      caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: ["alice","bob"],
     },
   );
   assert.ok(embed, 'still worth a post');
@@ -200,7 +207,7 @@ test('a week of real activity produces the card the recap posts', () => {
     assert.match(field(data, 'Bard').value, /\*\*Bob\*\*/);
     assert.match(field(data, 'Bard').value, /2h in voice/);
     assert.match(field(data, 'Bard').value, /Alice topped voice/);
-    assert.match(field(data, 'Scribe').value, /40 active minutes of chat/);
+    assert.match(field(data, 'Scribe').value, /40m in chat/);
   } finally { cleanup(); }
 });
 

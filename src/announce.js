@@ -132,7 +132,10 @@ async function settleSocialBadges(guild, recap, championId) {
 
   const caveDwellers = await settleCaveDwellers(guild, range);
 
-  const mentioned = new Set([awards.bard?.user_id, awards.scribe?.user_id, ...awards.alsoTopped.keys()]);
+  const mentioned = new Set([
+    awards.bard?.user_id, awards.scribe?.user_id,
+    ...awards.alsoTopped.keys(), ...(caveDwellers ?? []),
+  ]);
   const displayNames = new Map();
   for (const userId of mentioned) {
     if (!userId) continue;
@@ -148,13 +151,13 @@ async function settleSocialBadges(guild, recap, championId) {
     bardFloorMinutes: BARD_MIN_MINUTES,
     scribeFloorMinutes: SCRIBE_MIN_MINUTES,
     caveDwellerRoleName: CAVE_DWELLER_ENABLED ? (CAVE_DWELLER_ROLE || null) : null,
-    caveDwellerCount: caveDwellers,
+    caveDwellerIds: caveDwellers,
   });
 }
 
 /**
  * Gives the Cave Dweller role to everyone who did nothing at all last period, and takes it off
- * everyone else. Returns how many hold it, or null when the badge is switched off.
+ * everyone else. Returns their ids so the card can name them, or null when the badge is off.
  *
  * Not an award and not ranked, so it cannot use the award pass: it lands on however many members
  * were absent, or on none. It also cannot collide with the other badges, and needs no rule saying
@@ -197,7 +200,7 @@ async function settleCaveDwellers(guild, range) {
     awardReason: `${CAVE_DWELLER_ROLE} — nothing recorded last ${range.periodNoun}`,
   }).catch((error) => console.error('Could not settle the Cave Dweller role:', error));
 
-  return dwellers.length;
+  return dwellers;
 }
 
 /**
