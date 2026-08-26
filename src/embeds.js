@@ -1,11 +1,14 @@
 import { EmbedBuilder } from 'discord.js';
 import { formatPlayTime } from './ranks.js';
 import { achievementById } from './achievements.js';
-import { WINNER_ROLE_COLOR, BARD_ROLE_COLOR, SCRIBE_ROLE_COLOR, CAVE_DWELLER_ROLE_COLOR } from './roles.js';
+import { WINNER_ROLE_COLOR } from './roles.js';
 
 export const ACHIEVEMENT_GOLD = 0xF1C40F;
 /** Muted grey for the weeks nobody earned the title — a non-event should not look like a triumph. */
 const RECAP_EMPTY_GREY = 0x99AAB5;
+/** The badges' own card. Not the winner's colour: it sits directly beneath that card, and
+ *  matching it would read as one long celebration of one person. */
+const SOCIAL_BADGE_BLUE = 0x5865F2;
 /** How many cave dwellers to name before falling back to "and N more". */
 const CAVE_DWELLERS_NAMED = 8;
 
@@ -88,96 +91,90 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
 /**
  * The companion card for the social badges, posted in the same message as the playtime recap.
  *
- * A second embed rather than more fields on the first: the playtime card already carries three,
- * and Discord lays inline fields out three to a row, so folding two more in would wrap them into a
- * ragged second row underneath. As a separate card the badges read as their own section, and the
- * whole thing is still one post.
+ * A second embed rather than more fields on the first: that card already carries three, and Discord
+ * lays inline fields out three to a row, so folding two more in would wrap them into a ragged second
+ * row. As its own card the badges read as their own section, and it is still one post.
  *
- * Returns null when neither badge is configured, so the caller can simply omit it.
+ * One row of inline fields, deliberately. A tabbed version of this was built and rejected: buttons
+ * on a public announcement edit the *shared* message, so one member clicking a tab changes what
+ * everybody else sees. Fine for the `/stats` card, which is gated to whoever ran it; wrong for a
+ * post the whole server is reading. A compact row shows every badge at once and needs no clicking.
+ *
+ * Returns null when there is nothing to show, so the caller can simply omit it.
  *
  * Where a badge was passed over, the reason sits with the badge rather than under the member who
- * was denied it. That is the opposite of what the spec first said, and it is better: the question
- * a reader actually has is "why did the top talker not get this?", and it is asked while looking
- * at the badge, not while looking at somebody else's name three lines up.
+ * was denied it: the question a reader has is "why did the top talker not get this?", and they ask
+ * it while looking at the badge, not somebody else's name three lines up.
  */
-export function buildSocialBadgeEmbeds(awards, {
+export function buildSocialBadgesEmbed(awards, {
   displayNames, range, bardRoleName = null, scribeRoleName = null,
   bardFloorMinutes = 0, scribeFloorMinutes = 0,
   caveDwellerRoleName = null, caveDwellerIds = null,
 }) {
   const nameOf = (userId) => displayNames.get(userId) ?? 'Unknown member';
-  const embeds = [];
 
   const badges = [
     {
       roleName: bardRoleName,
       emoji: '🎵',
-      color: BARD_ROLE_COLOR,
       award: awards.bard,
       label: 'voice',
       floor: bardFloorMinutes,
-      citation: 'for speaking a lot',
-      describe: (row) => `**${formatPlayTime(row.voice_minutes * 60)}** in voice`,
-      floorText: (floor) => `Nobody reached ${formatPlayTime(floor * 60)} in voice`,
+      describe: (row) => `${formatPlayTime(row.voice_minutes * 60)} in voice`,
+      floorText: (floor) => `nobody reached ${formatPlayTime(floor * 60)}`,
     },
     {
       roleName: scribeRoleName,
       emoji: '✍️',
-      color: SCRIBE_ROLE_COLOR,
       award: awards.scribe,
       label: 'text',
       floor: scribeFloorMinutes,
-      citation: 'for writing more than most',
-      // Rendered as a duration to match the card above. Strictly these are a *count* of separate
-      // minutes somebody sent a message in, not one unbroken stretch of typing — so this reads as
-      // slightly more continuous than it was. Deliberate: the two cards sitting in different units
-      // was worse, and nobody reads a badge card as a stopwatch.
-      describe: (row) => `**${formatPlayTime(row.text_minutes * 60)}** in chat`,
-      floorText: (floor) => `Nobody reached ${formatPlayTime(floor * 60)} in chat`,
+      // Rendered as a duration to match the field beside it. Strictly these are a *count* of
+      // separate minutes somebody sent a message in rather than one unbroken stretch of typing, so
+      // it reads as slightly more continuous than it was — deliberate, because two fields side by
+      // side in visibly different units was the worse read.
+      describe: (row) => `${formatPlayTime(row.text_minutes * 60)} in chat`,
+      floorText: (floor) => `nobody reached ${formatPlayTime(floor * 60)}`,
     },
   ].filter((badge) => badge.roleName);
 
-  for (const badge of badges) {
-    const lines = [];
-    if (badge.award) {
-      lines.push(`Awarded to **${nameOf(badge.award.user_id)}** ${badge.citation}`, badge.describe(badge.award));
-    } else {
-      lines.push('*Unclaimed*', `_${badge.floor ? badge.floorText(badge.floor) : 'nobody qualified'}_`);
-    }
-    // Whoever led this board without being given it. Naming them here explains the result exactly
-    // where it looks surprising, and keeps a genuine double winner from being written out of it.
+  const fields = badges.map((badge) => {
+    const lines = badge.award
+      ? [`**${nameOf(badge.award.user_id)}**`, badge.describe(badge.award)]
+      : ['*Unclaimed*', `_${badge.floor ? badge.floorText(badge.floor) : 'nobody qualified'}_`];
+    // Whoever led this board without being given it, so a genuine double winner is not written out.
     for (const [userId, boards] of awards.alsoTopped ?? []) {
       if (boards.includes(badge.label) && userId !== badge.award?.user_id) {
-        lines.push(`_${nameOf(userId)} topped ${badge.label}, but already wears another badge_`);
+        lines.push(`_${nameOf(userId)} led this_`);
       }
     }
-    embeds.push(new EmbedBuilder()
-      .setColor(badge.color)
-      .setAuthor({ name: `${badge.emoji} ${badge.roleName}` })
-      .setDescription(lines.join('\n')));
-  }
+    return { name: `${badge.emoji} ${badge.roleName}`, value: lines.join('\n'), inline: true };
+  });
 
-  // Only shown when somebody actually holds it: a card announcing that nobody was absent is a card
-  // about nothing, and the badge having no holders is already visible in nobody wearing it.
+  // Only when somebody actually holds it. A field saying nobody was absent is a field about
+  // nothing, and on a card celebrating what people did it is the one entry that earns its place
+  // least. It was briefly always-on while this was a tab strip, where a row that changed width week
+  // to week read as a fault — as a plain field there is nothing to keep the shape of.
   //
-  // Named rather than counted, but capped — a description is 4096 characters, and a quiet week on
-  // a large server would otherwise drop the card rather than shorten one line.
+  // Named rather than counted, but capped: a field value is 1024 characters, and a quiet week on a
+  // large server would otherwise drop the whole embed rather than shorten one line.
   if (caveDwellerRoleName && caveDwellerIds?.length) {
     const shown = caveDwellerIds.slice(0, CAVE_DWELLERS_NAMED).map(nameOf);
     const rest = caveDwellerIds.length - shown.length;
-    embeds.push(new EmbedBuilder()
-      .setColor(CAVE_DWELLER_ROLE_COLOR)
-      .setAuthor({ name: `🕳️ ${caveDwellerRoleName}` })
-      .setDescription(`**${shown.join('**, **')}**${rest ? ` _and ${rest} more_` : ''} watching from the shadows`));
+    fields.push({
+      name: `🕳️ ${caveDwellerRoleName}`,
+      value: `**${shown.join('**, **')}**${rest ? ` _and ${rest} more_` : ''}\n_watching from the shadows_`,
+      inline: true,
+    });
   }
 
-  // The last card carries the footer, so the run of cards is closed off once rather than repeating
-  // the same line under each one.
-  const last = embeds[embeds.length - 1];
-  if (last) last.setFooter({ text: `Held until next ${range.periodNoun}'s recap` });
-  return embeds;
+  if (!fields.length) return null;
+  return new EmbedBuilder()
+    .setColor(SOCIAL_BADGE_BLUE)
+    .setAuthor({ name: '🎖️ Also this week' })
+    .addFields(fields)
+    .setFooter({ text: `Held until next ${range.periodNoun}'s recap` });
 }
-
 /**
  * The card for a period nobody earned. Wears the bot's own avatar rather than a member's, since
  * there is no member to show, and stays grey so it never reads as a celebration.

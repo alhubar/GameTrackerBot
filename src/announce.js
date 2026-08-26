@@ -11,7 +11,7 @@ import { achievementById } from './achievements.js';
 import { evaluateServerAchievements } from './serverAchievements.js';
 import {
   buildAchievementEmbed, buildServerAchievementEmbed, buildRecapEmbed, buildNoWinnerRecapEmbed,
-  buildSocialBadgeEmbeds,
+  buildSocialBadgesEmbed,
 } from './embeds.js';
 import { buildRecap, isRecapDue, markRecapAnnounced } from './recap.js';
 import { awardSocialBadges } from './socialBadges.js';
@@ -72,18 +72,15 @@ export async function checkServerAchievements(guild) {
 }
 
 /**
- * Decides the period's Bard and Scribe, hands their roles over, and returns the card for them —
- * or null when the feature is off, both badges are disabled, or nothing is renderable.
+ * Works out who holds what for a period, and gathers the names needed to render it. Reads only —
+ * no role is created, granted or taken away.
  *
- * Runs whether or not anybody won the playtime title: the boards are independent, and a period
- * where nobody played is exactly the sort where the talkers should still be recognised.
- *
- * The champion is passed in by id only. Nothing here needs their role to exist yet, so this can be
- * settled before the playtime badge is handed over without the two interleaving.
+ * Split from the settling below so anything that only wants to *look* at a period — a preview
+ * script, or a future command — cannot hand a role out as a side effect of rendering. The badges
+ * are awarded once, at the recap, and nowhere else.
  */
-async function settleSocialBadges(guild, recap, championId) {
-  if (!SOCIAL_ENABLED || (!BARD_ROLE && !SCRIBE_ROLE)) return null;
-  const { range } = recap;
+export async function computeSocialBadges(guild, range, championId) {
+  await ensureMembersCached(guild);
   // Departed members are dropped before the award pass, never after: a post-filter would hand a
   // badge to somebody who has left and then quietly show it as unclaimed.
   const present = await presentMemberIds(guild);
@@ -99,6 +96,49 @@ async function settleSocialBadges(guild, recap, championId) {
     voiceFloorMinutes: BARD_MIN_MINUTES,
     textFloorMinutes: SCRIBE_MIN_MINUTES,
   });
+  const caveDwellerIds = findCaveDwellers(guild, range);
+
+  const displayNames = new Map();
+  for (const userId of new Set([
+    awards.bard?.user_id, awards.scribe?.user_id,
+    ...awards.alsoTopped.keys(), ...(caveDwellerIds ?? []),
+  ])) {
+    if (!userId) continue;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (member) displayNames.set(userId, member.displayName);
+  }
+  return { awards, caveDwellerIds, displayNames };
+}
+
+/** The badge card for a period. Exported for the preview scripts. */
+export async function buildBadgeCardFor(guild, range, championId) {
+  const { awards, caveDwellerIds, displayNames } = await computeSocialBadges(guild, range, championId);
+  return buildSocialBadgesEmbed(awards, {
+    displayNames,
+    range,
+    bardRoleName: BARD_ROLE || null,
+    scribeRoleName: SCRIBE_ROLE || null,
+    bardFloorMinutes: BARD_MIN_MINUTES,
+    scribeFloorMinutes: SCRIBE_MIN_MINUTES,
+    caveDwellerRoleName: CAVE_DWELLER_ENABLED ? (CAVE_DWELLER_ROLE || null) : null,
+    caveDwellerIds,
+  });
+}
+
+/**
+ * Decides the period's Bard, Scribe and Cave Dwellers, hands their roles over, and returns their
+ * cards — or null when the feature is off or both talking badges are disabled.
+ *
+ * Runs whether or not anybody won the playtime title: the boards are independent, and a period
+ * where nobody played is exactly the sort where the talkers should still be recognised.
+ *
+ * The champion is passed in by id only. Nothing here needs their role to exist yet, so this can be
+ * settled before the playtime badge is handed over without the two interleaving.
+ */
+async function settleSocialBadges(guild, recap, championId) {
+  if (!SOCIAL_ENABLED || (!BARD_ROLE && !SCRIBE_ROLE)) return null;
+  const { range } = recap;
+  const { awards, caveDwellerIds, displayNames } = await computeSocialBadges(guild, range, championId);
 
   // An unclaimed badge is stripped rather than left on last period's holder — that is what makes
   // "unclaimed" an outcome the recap can honestly report.
@@ -121,20 +161,9 @@ async function settleSocialBadges(guild, recap, championId) {
   await handOver(BARD_ROLE, BARD_ROLE_ICON, BARD_ROLE_COLOR, awards.bard);
   await handOver(SCRIBE_ROLE, SCRIBE_ROLE_ICON, SCRIBE_ROLE_COLOR, awards.scribe);
 
-  const caveDwellers = await settleCaveDwellers(guild, range);
+  await applyCaveDwellerRole(guild, range, caveDwellerIds);
 
-  const mentioned = new Set([
-    awards.bard?.user_id, awards.scribe?.user_id,
-    ...awards.alsoTopped.keys(), ...(caveDwellers ?? []),
-  ]);
-  const displayNames = new Map();
-  for (const userId of mentioned) {
-    if (!userId) continue;
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (member) displayNames.set(userId, member.displayName);
-  }
-
-  return buildSocialBadgeEmbeds(awards, {
+  return buildSocialBadgesEmbed(awards, {
     displayNames,
     range,
     bardRoleName: BARD_ROLE || null,
@@ -142,7 +171,7 @@ async function settleSocialBadges(guild, recap, championId) {
     bardFloorMinutes: BARD_MIN_MINUTES,
     scribeFloorMinutes: SCRIBE_MIN_MINUTES,
     caveDwellerRoleName: CAVE_DWELLER_ENABLED ? (CAVE_DWELLER_ROLE || null) : null,
-    caveDwellerIds: caveDwellers,
+    caveDwellerIds,
   });
 }
 
@@ -159,11 +188,10 @@ async function settleSocialBadges(guild, recap, championId) {
  * Turning a setting off should not fire a burst of role edits across the server; deleting the role
  * in Discord is the way to clear it.
  */
-async function settleCaveDwellers(guild, range) {
+function findCaveDwellers(guild, range) {
   if (!SOCIAL_ENABLED || !CAVE_DWELLER_ENABLED || !CAVE_DWELLER_ROLE) return null;
   const active = new Set(db.getActiveMemberIds(guild.id, range.start, range.end));
   const trackingStartedAt = db.getSocialTrackingStartedAt(guild.id);
-  await ensureMembersCached(guild);
 
   const dwellers = [];
   for (const member of guild.members.cache.values()) {
@@ -179,7 +207,12 @@ async function settleCaveDwellers(guild, range) {
     })) continue;
     dwellers.push(member.id);
   }
+  return dwellers;
+}
 
+/** Hands the inactivity badge to exactly this set of members. The write half of the pair above. */
+async function applyCaveDwellerRole(guild, range, dwellers) {
+  if (!dwellers) return;
   await syncBadgeRoleMembers(guild, dwellers, {
     roleName: CAVE_DWELLER_ROLE,
     roleIcon: CAVE_DWELLER_ROLE_ICON,
@@ -198,8 +231,6 @@ async function settleCaveDwellers(guild, range) {
     reason: `${CAVE_DWELLER_ROLE} — inactivity badge`,
     awardReason: `${CAVE_DWELLER_ROLE} — nothing recorded last ${range.periodNoun}`,
   }).catch((error) => console.error('Could not settle the Cave Dweller role:', error));
-
-  return dwellers;
 }
 
 /**
@@ -213,10 +244,10 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
 
   // One post for the whole period. The badges are settled first so that whichever branch below
   // runs, its message carries the same companion card.
-  const socialEmbeds = await settleSocialBadges(guild, recap, recap.winner?.userId ?? null)
+  const socialEmbed = await settleSocialBadges(guild, recap, recap.winner?.userId ?? null)
     .catch((error) => {
       console.error('Could not settle the social badges:', error);
-      return [];
+      return null;
     });
 
   if (!recap.winner) {
@@ -229,7 +260,7 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
         botAvatarUrl: client.user?.displayAvatarURL() ?? null,
         roleName: RECAP_WINNER_ROLE || null,
       });
-      await channel.send({ embeds: [embed, ...(socialEmbeds ?? [])] })
+      await channel.send({ embeds: [embed, socialEmbed].filter(Boolean) })
         .catch((error) => console.error('Could not post the recap:', error));
     }
     markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
@@ -254,7 +285,7 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
       avatarUrl: winnerMember?.displayAvatarURL() ?? null,
       roleName: role?.name ?? null,
     });
-    await channel.send({ content: `<@${recap.winner.userId}>`, embeds: [embed, ...(socialEmbeds ?? [])] })
+    await channel.send({ embeds: [embed, socialEmbed].filter(Boolean) })
       .catch((error) => console.error('Could not post the recap:', error));
   }
   markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
