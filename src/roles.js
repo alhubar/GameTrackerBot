@@ -29,6 +29,9 @@ export const WINNER_ROLE_COLOR = 0x95FDFF;
  */
 export const BARD_ROLE_COLOR = 0xE2A0D8;
 export const SCRIBE_ROLE_COLOR = 0xC9A87C;
+/** Cave stone. Grey is the one family no rank uses, and a badge for having been absent should be
+ *  the quietest thing on the member list rather than a colour anybody would want. */
+export const CAVE_DWELLER_ROLE_COLOR = 0x7A8288;
 
 /**
  * Takes a badge off everyone, for a period nobody earned it. The role itself is left in place so it
@@ -48,6 +51,93 @@ export async function clearWinnerRole(guild, roleName) {
 
 /** Reusable alias: the same operation, for a badge that is not the playtime one. */
 export const clearBadgeRole = clearWinnerRole;
+
+/**
+ * Creates a badge role if it is missing, puts it where its colour will actually show, and gives it
+ * its icon. Returns the role, or null if it could not be created.
+ *
+ * Position and colour are applied **only on creation**, so a server that recolours or reorders a
+ * badge by hand keeps its choice — the same rule the rank roles already follow.
+ */
+async function ensureBadgeRole(guild, {
+  roleName, roleIcon = null, color = WINNER_ROLE_COLOR, positionFromTop = 1,
+  hoist = true, reason = `${roleName} — badge`,
+} = {}) {
+  if (!roleName) return null;
+  let role = guild.roles.cache.find((candidate) => candidate.name === roleName);
+  const isNew = !role;
+  role ??= await guild.roles.create({
+    name: roleName,
+    // discord.js 14.22 deprecated the flat `color` in favour of `colors`.
+    colors: { primaryColor: color },
+    hoist,
+    reason,
+  }).catch((error) => {
+    console.error(`Could not create the ${roleName} role:`, error);
+    return null;
+  });
+  if (!role) return null;
+
+  // Discord creates roles at the bottom, where every rank role sits above and overrides the badge.
+  // A member's name takes the colour of their highest coloured role, so the badge has to outrank
+  // them — put it just beneath the bot's own role, the highest slot it is allowed to use.
+  if (isNew) {
+    const ceiling = guild.members.me?.roles.highest.position;
+    if (ceiling && ceiling > 1) {
+      await role.setPosition(Math.max(1, ceiling - positionFromTop), { reason: 'Badge colour must outrank the rank roles' })
+        .catch((error) => console.error(`Could not raise the ${roleName} role:`, error));
+    }
+  }
+
+  // A role icon shows beside the name, but Discord only allows it from Boost Level 2. Attempt it
+  // and shrug off the rejection, so the icon simply starts working if the server is ever boosted.
+  if (roleIcon && role.unicodeEmoji !== roleIcon) {
+    await role.setUnicodeEmoji(roleIcon, `${roleName} badge icon`)
+      .catch(() => console.log('Role icons need Boost Level 2 — badge applied without one.'));
+  }
+  return role;
+}
+
+/**
+ * The many-holder form: make the role's membership exactly `userIds`.
+ *
+ * Cave Dweller is not an award and cannot use `awardBadgeRole` — it can land on several members at
+ * once, or on nobody. Reconciled rather than reassigned, so a member who held it last period and
+ * still qualifies is left alone instead of having it removed and re-added.
+ */
+export async function syncBadgeRoleMembers(guild, userIds, options = {}) {
+  const { roleName, awardReason = `${roleName} — awarded` } = options;
+  const role = await ensureBadgeRole(guild, options);
+  if (!role) return null;
+
+  const wanted = new Set(userIds);
+  await guild.members.fetch().catch(() => null);
+  for (const holder of role.members.values()) {
+    if (wanted.has(holder.id)) continue;
+    await holder.roles.remove(role, `No longer ${roleName}`).catch((error) =>
+      console.error(`Could not take the ${roleName} role from ${memberRef(holder.id)}:`, error));
+  }
+  for (const userId of wanted) {
+    const member = guild.members.cache.get(userId);
+    if (!member || member.roles.cache.has(role.id)) continue;
+    await member.roles.add(role, awardReason).catch((error) =>
+      console.error(`Could not give the ${roleName} role to ${memberRef(userId)}:`, error));
+  }
+  return role;
+}
+
+/**
+ * Takes one named role off one member, if they have it. A no-op — and crucially no API call — when
+ * they do not, which is what makes it cheap enough to call on every single message.
+ */
+export async function removeRoleByName(member, roleName) {
+  if (!member || !roleName) return false;
+  const role = member.roles.cache.find((candidate) => candidate.name === roleName);
+  if (!role) return false;
+  await member.roles.remove(role, `No longer ${roleName}`).catch((error) =>
+    console.error(`Could not take the ${roleName} role from ${memberRef(member.id)}:`, error));
+  return true;
+}
 
 /**
  * Hands the monthly winner's badge over: create the role if needed, strip it from whoever held it,
@@ -74,42 +164,10 @@ export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = nu
  * among them is cosmetic — nobody ever holds two, by the award pass's own rule — but Champion of
  * the Realm keeps the top slot because it is the badge the ranks belong to.
  */
-export async function awardBadgeRole(guild, userId, {
-  roleName, roleIcon = null, color = WINNER_ROLE_COLOR, positionFromTop = 1,
-  reason = `${roleName} — badge`, awardReason = `${roleName} — awarded`,
-} = {}) {
-  if (!roleName) return null;
-  let role = guild.roles.cache.find((candidate) => candidate.name === roleName);
-  const isNew = !role;
-  role ??= await guild.roles.create({
-    name: roleName,
-    // discord.js 14.22 deprecated the flat `color` in favour of `colors`.
-    colors: { primaryColor: color },
-    hoist: true,
-    reason,
-  }).catch((error) => {
-    console.error(`Could not create the ${roleName} role:`, error);
-    return null;
-  });
+export async function awardBadgeRole(guild, userId, options = {}) {
+  const { roleName, awardReason = `${roleName} — awarded` } = options;
+  const role = await ensureBadgeRole(guild, options);
   if (!role) return null;
-
-  // Discord creates roles at the bottom, where every rank role sits above and overrides the badge.
-  // A member's name takes the colour of their highest coloured role, so the badge has to outrank
-  // them — put it just beneath the bot's own role, the highest slot it is allowed to use.
-  if (isNew) {
-    const ceiling = guild.members.me?.roles.highest.position;
-    if (ceiling && ceiling > 1) {
-      await role.setPosition(Math.max(1, ceiling - positionFromTop), { reason: 'Badge colour must outrank the rank roles' })
-        .catch((error) => console.error(`Could not raise the ${roleName} role:`, error));
-    }
-  }
-
-  // A role icon shows beside the name, but Discord only allows it from Boost Level 2. Attempt it
-  // and shrug off the rejection, so the icon simply starts working if the server is ever boosted.
-  if (roleIcon && role.unicodeEmoji !== roleIcon) {
-    await role.setUnicodeEmoji(roleIcon, `${roleName} badge icon`)
-      .catch(() => console.log('Role icons need Boost Level 2 — badge applied without one.'));
-  }
 
   // role.members only sees cached members, so a previous holder who happens to be offline would
   // silently keep the badge without this.

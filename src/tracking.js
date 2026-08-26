@@ -7,7 +7,7 @@ import { RANKS, RANK_HOURS, formatHours, levelUpMessageTemplate, rankForSeconds,
 import {
   evaluateSessionStart, evaluateSessionEnd, evaluateSocialTiers, evaluateDuoDays,
 } from './achievements.js';
-import { announceAchievements, checkServerAchievements } from './announce.js';
+import { announceAchievements, checkServerAchievements, noteSociallyActive } from './announce.js';
 
 /**
  * Presence in, sessions and roles out — the heart of the bot.
@@ -90,6 +90,9 @@ export async function updateActivity(member, presence) {
 
   if (game) {
     const { changed, previous } = db.startSession(member.guild.id, member.id, game, now);
+    // Playing counts as turning up, so the Cave Dweller badge comes off here too — that badge is
+    // for members who did *nothing*, not merely for members who did not talk.
+    noteSociallyActive(member);
     // Discord reports "idle" after about ten minutes without input while still naming the game.
     // Stop the clock on it and restart only once the member is genuinely back at the keyboard.
     // A status flip carries no `changed`, so this has to run outside that branch.

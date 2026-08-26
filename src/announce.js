@@ -5,6 +5,7 @@ import {
   RECAP_MIN_SECONDS, RECAP_WINNER_ROLE, RECAP_WINNER_ROLE_ICON,
   SOCIAL_ENABLED, BARD_ROLE, BARD_ROLE_ICON, BARD_MIN_MINUTES,
   SCRIBE_ROLE, SCRIBE_ROLE_ICON, SCRIBE_MIN_MINUTES,
+  CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE, CAVE_DWELLER_ROLE_ICON, CAVE_DWELLER_GRACE_MS,
 } from './config.js';
 import { achievementById } from './achievements.js';
 import { evaluateServerAchievements } from './serverAchievements.js';
@@ -15,9 +16,10 @@ import {
 import { buildRecap, isRecapDue, markRecapAnnounced } from './recap.js';
 import { awardSocialBadges } from './socialBadges.js';
 import {
-  awardWinnerRole, clearWinnerRole, awardBadgeRole, clearBadgeRole,
-  BARD_ROLE_COLOR, SCRIBE_ROLE_COLOR,
+  awardWinnerRole, clearWinnerRole, awardBadgeRole, clearBadgeRole, syncBadgeRoleMembers,
+  removeRoleByName, BARD_ROLE_COLOR, SCRIBE_ROLE_COLOR, CAVE_DWELLER_ROLE_COLOR,
 } from './roles.js';
+import { eligibleForSilence } from './social.js';
 
 /**
  * How far down each social board to look. Only the top few can ever hold a badge, but pass-down
@@ -67,6 +69,23 @@ export async function checkServerAchievements(guild) {
  * recorded either way, so a quiet week is not retried forever and a restart cannot double-post.
  */
 /**
+ * Takes the Cave Dweller badge off a member who has just done something.
+ *
+ * That badge is a state rather than an award: it stops being true the instant somebody turns up,
+ * so it comes off on the spot rather than at the next recap. "You speak and the badge disappears"
+ * is feedback; "you speak and it goes next Monday" is not.
+ *
+ * Called from every activity path — a message, a qualifying voice minute, launching a game — and
+ * cheap enough for all of them because `removeRoleByName` makes no API call unless the member
+ * actually holds the role, which almost nobody does.
+ */
+export function noteSociallyActive(member) {
+  if (!SOCIAL_ENABLED || !CAVE_DWELLER_ENABLED || !CAVE_DWELLER_ROLE || !member) return;
+  removeRoleByName(member, CAVE_DWELLER_ROLE)
+    .catch((error) => console.error('Could not clear the Cave Dweller role:', error));
+}
+
+/**
  * Decides the period's Bard and Scribe, hands their roles over, and returns the card for them —
  * or null when the feature is off, both badges are disabled, or nothing is renderable.
  *
@@ -114,6 +133,8 @@ async function settleSocialBadges(guild, recap, championId) {
   await handOver(BARD_ROLE, BARD_ROLE_ICON, BARD_ROLE_COLOR, 2, awards.bard);
   await handOver(SCRIBE_ROLE, SCRIBE_ROLE_ICON, SCRIBE_ROLE_COLOR, 3, awards.scribe);
 
+  const caveDwellers = await settleCaveDwellers(guild, range);
+
   const mentioned = new Set([awards.bard?.user_id, awards.scribe?.user_id, ...awards.alsoTopped.keys()]);
   const displayNames = new Map();
   for (const userId of mentioned) {
@@ -129,7 +150,58 @@ async function settleSocialBadges(guild, recap, championId) {
     scribeRoleName: SCRIBE_ROLE || null,
     bardFloorMinutes: BARD_MIN_MINUTES,
     scribeFloorMinutes: SCRIBE_MIN_MINUTES,
+    caveDwellerRoleName: CAVE_DWELLER_ENABLED ? (CAVE_DWELLER_ROLE || null) : null,
+    caveDwellerCount: caveDwellers,
   });
+}
+
+/**
+ * Gives the Cave Dweller role to everyone who did nothing at all last period, and takes it off
+ * everyone else. Returns how many hold it, or null when the badge is switched off.
+ *
+ * Not an award and not ranked, so it cannot use the award pass: it lands on however many members
+ * were absent, or on none. It also cannot collide with the other badges, and needs no rule saying
+ * so — Champion has playtime above zero, Bard voice above zero and Scribe text above zero, while
+ * this requires all three to be zero. The exclusion is arithmetic rather than policy.
+ *
+ * Switched off, this touches nothing at all rather than stripping the role from whoever has it.
+ * Turning a setting off should not fire a burst of role edits across the server; deleting the role
+ * in Discord is the way to clear it.
+ */
+async function settleCaveDwellers(guild, range) {
+  if (!SOCIAL_ENABLED || !CAVE_DWELLER_ENABLED || !CAVE_DWELLER_ROLE) return null;
+  const active = new Set(db.getActiveMemberIds(guild.id, range.start, range.end));
+  const trackingStartedAt = db.getSocialTrackingStartedAt(guild.id);
+  await guild.members.fetch().catch(() => null);
+
+  const dwellers = [];
+  for (const member of guild.members.cache.values()) {
+    if (member.user.bot) continue;
+    // Opting out means not being measured, which has to include not being labelled for the result.
+    if (db.isOptedOut(guild.id, member.id)) continue;
+    if (active.has(member.id)) continue;
+    if (!eligibleForSilence({
+      trackingStartedAt,
+      joinedAt: member.joinedTimestamp ?? null,
+      periodStart: range.start,
+      graceMs: CAVE_DWELLER_GRACE_MS,
+    })) continue;
+    dwellers.push(member.id);
+  }
+
+  await syncBadgeRoleMembers(guild, dwellers, {
+    roleName: CAVE_DWELLER_ROLE,
+    roleIcon: CAVE_DWELLER_ROLE_ICON,
+    color: CAVE_DWELLER_ROLE_COLOR,
+    positionFromTop: 4,
+    // The only badge that is not hoisted. Hoisting would carve a permanent, public "inactive"
+    // section into the member list, which is a considerably harsher object than a coloured name.
+    hoist: false,
+    reason: `${CAVE_DWELLER_ROLE} — inactivity badge`,
+    awardReason: `${CAVE_DWELLER_ROLE} — nothing recorded last ${range.periodNoun}`,
+  }).catch((error) => console.error('Could not settle the Cave Dweller role:', error));
+
+  return dwellers.length;
 }
 
 export async function announceRecap(guild, now = Date.now(), { force = false } = {}) {

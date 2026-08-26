@@ -8,8 +8,10 @@ import {
 import { commands } from './commands/index.js';
 import { handleInteraction } from './interactions/index.js';
 import { updateActivity, reconcileRank, trackerState } from './tracking.js';
-import { recordMessage, settleRoom, settleAllRooms } from './socialTracking.js';
-import { announceAchievements, announceRecap, checkServerAchievements } from './announce.js';
+import { recordMessage, shouldRecordMessage, settleRoom, settleAllRooms } from './socialTracking.js';
+import {
+  announceAchievements, announceRecap, checkServerAchievements, noteSociallyActive,
+} from './announce.js';
 import { rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
 import { collectDueReminders } from './events.js';
@@ -64,7 +66,9 @@ client.on(Events.PresenceUpdate, async (_oldPresence, newPresence) => {
 if (SOCIAL_ENABLED) {
   client.on(Events.MessageCreate, (message) => {
     try {
-      recordMessage(db, message);
+      // Any message counts as turning up, even one that bought no minute because an earlier
+      // message already claimed that minute.
+      if (recordMessage(db, message) || shouldRecordMessage(message)) noteSociallyActive(message.member);
     } catch (error) { console.error('Could not record a message:', error); }
   });
 }
@@ -79,6 +83,11 @@ if (SOCIAL_ENABLED) {
       const now = Date.now();
       for (const channelId of new Set([oldState.channelId, newState.channelId].filter(Boolean))) {
         settleRoom(db, guild, channelId, now, SOCIAL_VOICE_DAILY_CAP_MINUTES);
+        // Everyone whose clock is now running has turned up — not only the member who moved.
+        // Two people joining an empty channel both start counting off a single gateway event.
+        for (const row of db.getVoiceRowsForChannel(guild.id, channelId)) {
+          if (row.qualified) noteSociallyActive(guild.members.cache.get(row.user_id));
+        }
       }
     } catch (error) { console.error('Could not settle a voice channel:', error); }
   });

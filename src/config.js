@@ -97,6 +97,21 @@ if (!Number.isInteger(SCRIBE_MIN_MINUTES) || SCRIBE_MIN_MINUTES < 0) {
   throw new Error(`SCRIBE_MIN_MINUTES must be a whole number of 0 or more — got "${process.env.SCRIBE_MIN_MINUTES}".`);
 }
 
+// Cave Dweller: the one badge nobody wants, for members who did nothing at all last period.
+// **Off unless explicitly switched on**, and the only setting here that defaults to off — it is
+// the one that can land badly, it reaches only people who were not there to see it, and it rewards
+// nobody. Everything else in this section is worth having on by default; this is not.
+export const CAVE_DWELLER_ENABLED = process.env.CAVE_DWELLER_ENABLED?.trim().toLowerCase() === 'true';
+export const CAVE_DWELLER_ROLE = process.env.CAVE_DWELLER_ROLE?.trim() ?? 'Cave Dweller';
+export const CAVE_DWELLER_ROLE_ICON = process.env.CAVE_DWELLER_ROLE_ICON?.trim();
+// How long a member must have been in the guild, and tracked, *before the period began* to be
+// judged on it. Somebody who joined on Friday has no rows for the week and has earned no joke.
+export const CAVE_DWELLER_GRACE_DAYS = Number(process.env.CAVE_DWELLER_GRACE_DAYS ?? '14');
+if (!Number.isInteger(CAVE_DWELLER_GRACE_DAYS) || CAVE_DWELLER_GRACE_DAYS < 0) {
+  throw new Error(`CAVE_DWELLER_GRACE_DAYS must be a whole number of 0 or more — got "${process.env.CAVE_DWELLER_GRACE_DAYS}".`);
+}
+export const CAVE_DWELLER_GRACE_MS = CAVE_DWELLER_GRACE_DAYS * 24 * 60 * 60 * 1000;
+
 // Anti-idle tracking. Discord flips a member to "idle" after roughly ten minutes without input but
 // keeps reporting whatever game is still open, so a launcher left running overnight would otherwise
 // bank a full night of playtime and outrank everyone who actually played.

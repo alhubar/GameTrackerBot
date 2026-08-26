@@ -110,6 +110,7 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
 export function buildSocialBadgesEmbed(awards, {
   displayNames, range, bardRoleName = null, scribeRoleName = null,
   bardFloorMinutes = 0, scribeFloorMinutes = 0,
+  caveDwellerRoleName = null, caveDwellerCount = null,
 }) {
   const badges = [
     {
@@ -135,7 +136,8 @@ export function buildSocialBadgesEmbed(awards, {
     },
   ].filter((badge) => badge.roleName);
 
-  if (!badges.length) return null;
+  const showCaveDwellers = caveDwellerRoleName && caveDwellerCount !== null;
+  if (!badges.length && !showCaveDwellers) return null;
 
   const nameOf = (userId) => displayNames.get(userId) ?? 'Unknown member';
   const embed = new EmbedBuilder()
@@ -157,6 +159,19 @@ export function buildSocialBadgesEmbed(awards, {
       }
     }
     embed.addFields({ name: `${badge.emoji} ${badge.roleName}`, value: lines.join('\n'), inline: true });
+  }
+
+  // A count, never a list of names. The role is already visible on the members who hold it, and
+  // printing a roll-call of everybody who was absent is a different and much sharper thing than
+  // quietly colouring their name. An empty week is worth saying out loud, and is good news.
+  if (showCaveDwellers) {
+    embed.addFields({
+      name: `🕳️ ${caveDwellerRoleName}`,
+      value: caveDwellerCount
+        ? `**${caveDwellerCount}** ${caveDwellerCount === 1 ? 'member' : 'members'}\n_nothing recorded all ${range.periodNoun}_`
+        : `_Nobody — everyone turned up this ${range.periodNoun}_`,
+      inline: true,
+    });
   }
 
   embed.setFooter({ text: `Held until next ${range.periodNoun}'s recap` });

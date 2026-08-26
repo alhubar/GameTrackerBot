@@ -122,6 +122,46 @@ test('a missing alsoTopped map is tolerated', () => {
   assert.ok(embed.data.fields.length);
 });
 
+// ---- Cave Dweller ----------------------------------------------------------------------------
+
+test('cave dwellers are reported as a count, never as a list of names', () => {
+  const data = build({ bard: row('alice', { voice: 90 }) }, {
+    caveDwellerRoleName: 'Cave Dweller', caveDwellerCount: 3,
+  });
+  const value = field(data, 'Cave Dweller').value;
+  assert.match(value, /\*\*3\*\* members/);
+  assert.doesNotMatch(value, /Alice|Bob|Carol/, 'a roll-call of the absent is a much sharper object');
+});
+
+test('a single cave dweller is not pluralised', () => {
+  const data = build({}, { caveDwellerRoleName: 'Cave Dweller', caveDwellerCount: 1 });
+  assert.match(field(data, 'Cave Dweller').value, /\*\*1\*\* member\n/);
+});
+
+test('a week where everybody turned up says so, and reads as good news', () => {
+  const data = build({}, { caveDwellerRoleName: 'Cave Dweller', caveDwellerCount: 0 });
+  assert.match(field(data, 'Cave Dweller').value, /Nobody — everyone turned up this week/);
+});
+
+test('the badge is absent from the card when it is switched off', () => {
+  const data = build({ bard: row('alice', { voice: 90 }) }, {
+    caveDwellerRoleName: null, caveDwellerCount: 4,
+  });
+  assert.equal(field(data, 'Cave Dweller'), undefined, 'a disabled badge is never mentioned');
+});
+
+test('a card can be built for cave dwellers alone when the other badges are off', () => {
+  const embed = buildSocialBadgesEmbed(
+    { bard: null, scribe: null, alsoTopped: new Map() },
+    {
+      displayNames: NAMES, range: RANGE, bardRoleName: null, scribeRoleName: null,
+      caveDwellerRoleName: 'Cave Dweller', caveDwellerCount: 2,
+    },
+  );
+  assert.ok(embed, 'still worth a post');
+  assert.equal(embed.data.fields.length, 1);
+});
+
 // ---- End to end ------------------------------------------------------------------------------
 // Real rows out of the real query, through the real award pass, into the real renderer. The three
 // agree on a row shape only by convention, and a renamed column would otherwise fail in Discord

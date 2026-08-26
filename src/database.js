@@ -315,6 +315,22 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     GROUP BY user_id HAVING SUM(${metric}_minutes) > 0
     ORDER BY SUM(${metric}_minutes) DESC, user_id ASC LIMIT ?
   `)]));
+  /**
+   * Everyone who did *anything* in a window: played, typed, or held a qualifying voice minute.
+   *
+   * The complement of this set is what Cave Dweller is awarded from, so a false negative here
+   * hands somebody a badge saying they were absent when they were not. It therefore also counts
+   * whoever is playing or in voice right this second: an in-flight session has no play_sessions
+   * row until it closes, and somebody who never stopped playing all period would otherwise look
+   * like they had never started.
+   */
+  const getActiveMemberIdsStmt = db.prepare(`
+    SELECT DISTINCT user_id FROM play_sessions WHERE guild_id = ? AND ended_at >= ? AND ended_at < ?
+    UNION SELECT user_id FROM social_days
+      WHERE guild_id = ? AND day >= ? AND day <= ? AND (text_minutes > 0 OR voice_minutes > 0)
+    UNION SELECT user_id FROM active_sessions WHERE guild_id = ?
+    UNION SELECT user_id FROM active_voice WHERE guild_id = ?
+  `);
   const getFirstSocialDayStmt = db.prepare(`
     SELECT MIN(day) AS day FROM social_days
     WHERE guild_id = ? AND user_id = ? AND (text_minutes > 0 OR voice_minutes > 0)
@@ -1053,6 +1069,18 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 
     /** The first day this member was active at all, or null if they never have been. */
     getFirstSocialDay: (guildId, userId) => getFirstSocialDayStmt.get(guildId, userId)?.day ?? null,
+
+    /**
+     * Everyone who played, typed or held a qualifying voice minute in a window, plus anyone
+     * mid-session or in voice right now. Cave Dweller is awarded to the members who are *not* in
+     * this set, so it is deliberately generous about what counts as having shown up.
+     */
+    getActiveMemberIds(guildId, fromMs, toMs) {
+      const { fromDay, toDay } = windowDays(fromMs, toMs);
+      return getActiveMemberIdsStmt
+        .all(guildId, fromMs, toMs, guildId, fromDay, toDay, guildId, guildId)
+        .map((row) => row.user_id);
+    },
 
     getSocialTrackingStartedAt: (guildId) =>
       getSocialTrackingStartedAtStmt.get(guildId)?.social_tracking_started_at ?? null,

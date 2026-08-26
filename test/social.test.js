@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tempDatabase, T0, MINUTE, HOUR, DAY } from './helpers.js';
-import { socialDayKey, epochMinute, windowDays, isSilent } from '../src/social.js';
+import { tempDatabase, playSession, T0, MINUTE, HOUR, DAY } from './helpers.js';
+import { socialDayKey, epochMinute, windowDays, eligibleForSilence } from '../src/social.js';
 
 const GUILD = 'g1';
 const A = 'alice';
@@ -38,13 +38,48 @@ test('windowDays never inverts on a zero-length window', () => {
 });
 
 
-test('isSilent needs a floor, not merely an absence of rows', () => {
-  const base = { firstActiveDay: null, trackingStartedAt: T0 - 30 * DAY, joinedAt: T0 - 30 * DAY, graceMs: 7 * DAY };
-  assert.equal(isSilent(base, T0), true);
-  assert.equal(isSilent({ ...base, firstActiveDay: '2026-06-01' }, T0), false, 'spoke once, never silent');
-  assert.equal(isSilent({ ...base, joinedAt: T0 - HOUR }, T0), false, 'joined an hour ago');
-  assert.equal(isSilent({ ...base, trackingStartedAt: T0 - HOUR }, T0), false, 'bot only just started tracking');
-  assert.equal(isSilent({ ...base, joinedAt: null }, T0), false, 'unknown floor is answered, not guessed');
+test('a member can only be judged on a period they were present and tracked for', () => {
+  const periodStart = T0;
+  const base = {
+    trackingStartedAt: periodStart - 30 * DAY,
+    joinedAt: periodStart - 30 * DAY,
+    periodStart,
+    graceMs: 7 * DAY,
+  };
+  assert.equal(eligibleForSilence(base), true);
+  assert.equal(eligibleForSilence({ ...base, joinedAt: periodStart - HOUR }), false,
+    'joined an hour before the period began');
+  assert.equal(eligibleForSilence({ ...base, trackingStartedAt: periodStart - HOUR }), false,
+    'the bot itself had barely started recording');
+  assert.equal(eligibleForSilence({ ...base, joinedAt: periodStart + DAY }), false,
+    'joined part-way through the period');
+});
+
+test('the grace period is measured against the start of the period, not against now', () => {
+  const periodStart = T0;
+  const joined = periodStart - 3 * DAY;
+  assert.equal(
+    eligibleForSilence({ trackingStartedAt: 0, joinedAt: joined, periodStart, graceMs: 7 * DAY }),
+    false,
+    'three days before the period is inside a seven-day grace',
+  );
+  assert.equal(
+    eligibleForSilence({ trackingStartedAt: 0, joinedAt: joined, periodStart, graceMs: 2 * DAY }),
+    true,
+  );
+});
+
+test('an unknown floor is answered no rather than guessed', () => {
+  const base = { trackingStartedAt: T0 - 30 * DAY, joinedAt: T0 - 30 * DAY, periodStart: T0 };
+  assert.equal(eligibleForSilence({ ...base, joinedAt: null }), false, 'Discord did not give a join date');
+  assert.equal(eligibleForSilence({ ...base, trackingStartedAt: null }), false, 'tracking floor never recorded');
+});
+
+test('with no grace configured, being there before the period starts is enough', () => {
+  assert.equal(
+    eligibleForSilence({ trackingStartedAt: T0 - MINUTE, joinedAt: T0 - MINUTE, periodStart: T0 }),
+    true,
+  );
 });
 
 // ---- Text minutes ----------------------------------------------------------------------------
@@ -263,6 +298,66 @@ test('recording the floor does not disturb other guild settings', () => {
     db.setNotificationChannel(GUILD, 'chan-1');
     db.markSocialTrackingStarted(GUILD, T0);
     assert.equal(db.getNotificationChannel(GUILD), 'chan-1');
+  } finally { cleanup(); }
+});
+
+// ---- Who turned up ---------------------------------------------------------------------------
+// The complement of this set is what Cave Dweller is awarded from, so a false negative here hands
+// somebody a badge saying they were absent when they were not.
+
+test('typing, voice and playing all count as having turned up', () => {
+  const { db, cleanup } = tempDatabase();
+  try {
+    db.recordTextMinute(GUILD, 'typer', T0);
+    db.creditVoiceMinutes(GUILD, 'talker', 30, 240, T0);
+    playSession(db, GUILD, 'player', 'Some Game', T0, HOUR);
+    const active = db.getActiveMemberIds(GUILD, T0, T0 + DAY);
+    assert.deepEqual([...active].sort(), ['player', 'talker', 'typer']);
+  } finally { cleanup(); }
+});
+
+test('a member with a day row but no minutes has not turned up', () => {
+  const { db, cleanup } = tempDatabase();
+  try {
+    // creditVoiceMinutes with nothing to credit must not create the appearance of activity.
+    db.creditVoiceMinutes(GUILD, A, 0, 240, T0);
+    assert.deepEqual(db.getActiveMemberIds(GUILD, T0, T0 + DAY), []);
+  } finally { cleanup(); }
+});
+
+test('somebody mid-session right now counts, though no session has closed', () => {
+  const { db, cleanup } = tempDatabase();
+  try {
+    // A member who never stopped playing all period has no play_sessions row to be found by.
+    db.startSession(GUILD, A, 'Long Game', T0);
+    assert.deepEqual(db.getActiveMemberIds(GUILD, T0, T0 + DAY), [A]);
+  } finally { cleanup(); }
+});
+
+test('activity outside the window does not count as turning up inside it', () => {
+  const { db, cleanup } = tempDatabase();
+  try {
+    db.recordTextMinute(GUILD, A, MIDNIGHT - DAY);
+    playSession(db, GUILD, B, 'Some Game', MIDNIGHT - 2 * DAY, HOUR);
+    assert.deepEqual(db.getActiveMemberIds(GUILD, MIDNIGHT, MIDNIGHT + DAY), []);
+  } finally { cleanup(); }
+});
+
+test('turning up is scoped to the guild', () => {
+  const { db, cleanup } = tempDatabase();
+  try {
+    db.recordTextMinute('g2', A, T0);
+    assert.deepEqual(db.getActiveMemberIds(GUILD, T0, T0 + DAY), []);
+  } finally { cleanup(); }
+});
+
+test('the same member active in two ways is listed once', () => {
+  const { db, cleanup } = tempDatabase();
+  try {
+    db.recordTextMinute(GUILD, A, T0);
+    db.creditVoiceMinutes(GUILD, A, 10, 240, T0);
+    playSession(db, GUILD, A, 'Some Game', T0, HOUR);
+    assert.deepEqual(db.getActiveMemberIds(GUILD, T0, T0 + DAY), [A]);
   } finally { cleanup(); }
 });
 

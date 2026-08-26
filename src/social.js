@@ -45,18 +45,18 @@ export function windowDays(fromMs, toMs) {
 export const SOCIAL_METRICS = ['text', 'voice'];
 
 /**
- * Whether this member counts as never having spoken, rather than merely having no rows.
+ * Whether a member can fairly be judged on a period at all, before asking what they did in it.
  *
- * Absence of data is not evidence of silence, so the question is only answerable from a floor:
- * tracking must have been running, and the member must have been in the guild, for at least
- * `graceMs` before now. Without it, someone who joined yesterday and someone who has been quiet
- * for a year are indistinguishable — and only one of them has earned the joke.
+ * Absence of data is not evidence of silence. Somebody who joined on Friday has no rows for the
+ * week, and neither does anybody at all if the bot was only switched on that week — and none of
+ * them has earned the joke. So both clocks must have been running since before the period began:
+ * the member must have been in the guild, and tracking must have been recording, for at least
+ * `graceMs` before its start.
  *
- * `trackingStartedAt` or `joinedAt` of null means the floor is unknown, which is answered "no"
- * rather than guessed.
+ * A `null` on either is answered "no" rather than guessed. An unknown join date is exactly the
+ * case where a wrong answer is unfair, and Discord does not always give one.
  */
-export function isSilent({ firstActiveDay, trackingStartedAt, joinedAt, graceMs }, now) {
-  if (firstActiveDay) return false;
+export function eligibleForSilence({ trackingStartedAt, joinedAt, periodStart, graceMs = 0 }) {
   if (trackingStartedAt == null || joinedAt == null) return false;
-  return now - Math.max(trackingStartedAt, joinedAt) >= graceMs;
+  return Math.max(trackingStartedAt, joinedAt) + graceMs <= periodStart;
 }
