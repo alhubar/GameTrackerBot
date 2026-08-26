@@ -1013,6 +1013,10 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     // ---- Voice presence ----------------------------------------------------------------------
 
     getVoiceRow: (guildId, userId) => getVoiceRowStmt.get(guildId, userId) ?? null,
+    /** How many members are in voice here, and how many of them are actually earning. */
+    getVoiceCounts: (guildId) => db.prepare(
+      'SELECT COUNT(*) AS present, COALESCE(SUM(qualified), 0) AS counting FROM active_voice WHERE guild_id = ?',
+    ).get(guildId),
     getVoiceRowsForChannel: (guildId, channelId) => getVoiceRowsForChannelStmt.all(guildId, channelId),
     getAllVoiceRows: () => getAllVoiceRowsStmt.all(),
 
@@ -1134,6 +1138,14 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
         `).get(guildId, userId).n,
         eventsCreated: count('SELECT COUNT(*) AS n FROM events WHERE guild_id = ? AND creator_id = ?'),
         corrections: count('SELECT COUNT(*) AS n FROM stat_adjustments WHERE guild_id = ? AND user_id = ?'),
+        // All time rather than the current period: this answers "what do you hold about me",
+        // which is not the same question the badges ask.
+        social: db.prepare(`
+          SELECT COALESCE(SUM(text_minutes), 0) AS text_minutes,
+                 COALESCE(SUM(voice_minutes), 0) AS voice_minutes, COUNT(*) AS days
+          FROM social_days WHERE guild_id = ? AND user_id = ?
+        `).get(guildId, userId),
+        inVoice: !!getVoiceRowStmt.get(guildId, userId),
       };
     },
 

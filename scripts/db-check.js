@@ -203,6 +203,53 @@ check('reminder rows whose event is gone', ['event_reminders_sent', 'events'],
   'SELECT r.event_id, r.stage_minutes FROM event_reminders_sent r LEFT JOIN events e ON e.id = r.event_id WHERE e.id IS NULL',
   expectFalsy('ERROR', 'none', (r) => `${plural(r.length, 'row')} orphaned`));
 
+console.log('\nSocial activity');
+// Every check here is guarded on the table, because social_days and active_voice arrived after
+// this script did and a real snapshot taken before then simply will not have them.
+check('recorded social days', ['social_days'],
+  `SELECT guild_id, COUNT(*) AS n, COUNT(DISTINCT user_id) AS members,
+          COALESCE(SUM(text_minutes), 0) AS text, COALESCE(SUM(voice_minutes), 0) AS voice
+     FROM social_days GROUP BY guild_id`,
+  (rows, label) => {
+    if (!rows.length) { report('OK', label, 'none yet'); return; }
+    report('NOTE', label, rows.map((r) =>
+      `guild ${r.guild_id}: ${plural(r.n, 'day-row')} for ${plural(r.members, 'member')}, `
+      + `${plural(r.text, 'text minute')} and ${hours(r.voice * 60)} of voice`).join('; '), rows);
+  });
+
+check('negative social minutes', ['social_days'],
+  // Nothing subtracts from these — the only writes add, and the voice credit clamps at the cap.
+  // A negative therefore means something wrote a total directly rather than going through them.
+  'SELECT guild_id, user_id, day, text_minutes, voice_minutes FROM social_days '
+  + 'WHERE text_minutes < 0 OR voice_minutes < 0',
+  expectFalsy('ERROR', 'none', (r) => `${plural(r.length, 'day-row')} below zero`));
+
+check('the silence floor', ['guild_settings.social_tracking_started_at', 'social_days'],
+  // Without it, Cave Dweller cannot tell a member who said nothing from one who joined yesterday,
+  // so it refuses to award at all. Worth naming, because the symptom is a badge that never appears.
+  `SELECT DISTINCT s.guild_id FROM social_days s
+     LEFT JOIN guild_settings g ON g.guild_id = s.guild_id
+    WHERE g.social_tracking_started_at IS NULL`,
+  expectFalsy('WARN', 'recorded for every guild with activity',
+    (r) => `${plural(r.length, 'guild')} tracking social activity with no start recorded — `
+      + 'Cave Dweller cannot be awarded there'));
+
+check('members in voice right now', ['active_voice'],
+  // Not a fault: this table is live state, and the report may well be run while the bot is up.
+  // Rows surviving a *stopped* bot would be, since both shutdown paths empty it.
+  `SELECT guild_id, COUNT(*) AS n, SUM(qualified) AS counting FROM active_voice GROUP BY guild_id`,
+  (rows, label) => {
+    if (!rows.length) { report('OK', label, 'none'); return; }
+    report('NOTE', label, rows.map((r) =>
+      `guild ${r.guild_id}: ${plural(r.n, 'member')}, ${r.counting} with the clock running`).join('; '), rows);
+  });
+
+check('voice rows with no checkpoint', ['active_voice'],
+  // last_checkpoint_at carries the owed seconds. A null would make the next settle credit from
+  // the epoch, which is where an implausible pile of voice minutes would come from.
+  'SELECT guild_id, user_id, channel_id FROM active_voice WHERE last_checkpoint_at IS NULL',
+  expectFalsy('ERROR', 'none', (r) => plural(r.length, 'row')));
+
 console.log('\nOpt-outs');
 // Informational, not a fault. Worth surfacing because an opted-out member is filtered out of every
 // ranking, so "why is X missing from the leaderboard" has an answer here rather than in the data.
@@ -219,6 +266,22 @@ check('opted-out members with a session still running', ['tracking_optouts', 'ac
   `SELECT o.guild_id, o.user_id FROM tracking_optouts o
      JOIN active_sessions s ON s.guild_id = o.guild_id AND s.user_id = o.user_id`,
   expectFalsy('WARN', 'none', (r) => `${plural(r.length, 'session')} running for an opted-out member`));
+
+check('opted-out members still in a voice row', ['tracking_optouts', 'active_voice'],
+  // Same shape as the session check above: optOut drops the voice row in the same transaction, and
+  // settleRoom refuses to create one, so a survivor means both gates were bypassed.
+  `SELECT o.guild_id, o.user_id FROM tracking_optouts o
+     JOIN active_voice v ON v.guild_id = o.guild_id AND v.user_id = o.user_id`,
+  expectFalsy('WARN', 'none', (r) => `${plural(r.length, 'voice row')} for an opted-out member`));
+
+check('social activity recorded after opting out', ['tracking_optouts', 'social_days'],
+  // The day the member opted out is ambiguous — minutes earned that morning are legitimate — so
+  // only days strictly after it can indicate the write gate leaked.
+  `SELECT s.guild_id, s.user_id, s.day FROM social_days s
+     JOIN tracking_optouts o ON o.guild_id = s.guild_id AND o.user_id = s.user_id
+    WHERE s.day > date(o.opted_out_at / 1000, 'unixepoch')
+      AND (s.text_minutes > 0 OR s.voice_minutes > 0)`,
+  expectFalsy('WARN', 'none', (r) => `${plural(r.length, 'day-row')} written after the member opted out`));
 
 console.log('\nManual corrections');
 // Not a fault of any kind — but a total that was set by hand is otherwise indistinguishable from

@@ -202,6 +202,31 @@ describe('the stored-data summary', () => {
     assert.equal(summary.totalSeconds, 0);
     assert.equal(summary.sessions, 0);
     assert.equal(summary.duoPartners, 0);
+    assert.equal(summary.social.days, 0);
+    assert.equal(summary.inVoice, false);
+  });
+
+  test('social minutes are listed too — held data has to be declared', () => {
+    db.recordTextMinute(G, QUIET, T0);
+    db.recordTextMinute(G, QUIET, T0 + MINUTE);
+    db.creditVoiceMinutes(G, QUIET, 75, 240, T0);
+    db.creditVoiceMinutes(G, QUIET, 20, 240, T0 + 26 * HOUR);
+
+    const summary = db.getStoredDataSummary(G, QUIET);
+    assert.equal(summary.social.text_minutes, 2);
+    assert.equal(summary.social.voice_minutes, 95);
+    assert.equal(summary.social.days, 2, 'counted across every day on record, not just today');
+  });
+
+  test('being in voice right now is disclosed, like a session in flight', () => {
+    db.setVoiceState(G, QUIET, 'room-1', true, T0);
+    assert.equal(db.getStoredDataSummary(G, QUIET).inVoice, true);
+  });
+
+  test('the summary covers another guild separately', () => {
+    db.recordTextMinute('guild-2', QUIET, T0);
+    assert.equal(db.getStoredDataSummary(G, QUIET).social.days, 0);
+    assert.equal(db.getStoredDataSummary('guild-2', QUIET).social.days, 1);
   });
 });
 

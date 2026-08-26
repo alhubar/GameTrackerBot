@@ -36,7 +36,7 @@ You can customize every announcement independently with `LEVEL_UP_MESSAGE_1` thr
 1. Install [Node.js 20 or later](https://nodejs.org/).
 2. In this folder, run `npm install`.
 3. Copy `.env.example` to `.env`, then fill in `DISCORD_TOKEN`.
-4. In the Discord Developer Portal, enable **Presence Intent** and **Server Members Intent** under **Bot → Privileged Gateway Intents**.
+4. In the Discord Developer Portal, enable **Presence Intent** and **Server Members Intent** under **Bot → Privileged Gateway Intents**. Those two are the only ones needing a switch — the message and voice-state intents behind the [talking and voice badges](#talking-and-voice-badges) are not privileged, and **Message Content** is never requested at all.
 5. Invite the bot with the `bot` and `applications.commands` scopes. Give it **Manage Roles**, and put its role above the tracker roles in the server role list.
 6. Start it with `npm start`.
 7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`, and `/privacy` to control your own tracking ([Privacy and opting out](#privacy-and-opting-out)). Manage Server also gets `/backup` ([Backups](#backups)), and administrators get `/health` ([Checking the bot is alive](#checking-the-bot-is-alive)) and `/adjust` ([Correcting bad stats](#correcting-bad-stats)).
@@ -114,6 +114,26 @@ Each period is announced exactly once — the period is recorded after posting, 
 
 Setting `RECAP_PERIOD=week` on a quiet server is the quickest way to see one, since the next Monday will produce a recap either way — with a winner if anyone cleared `RECAP_MIN_HOURS`, and the unclaimed card if not.
 
+## Talking and voice badges
+
+Not everyone who turns up plays something. Alongside Gamer of the Week, the same recap post awards two more badges — **Bard** for voice and **Scribe** for chat — so a server where the next rank is a long way off still has something changing hands every week. `SOCIAL_ENABLED=false` switches the whole thing off, handlers and all.
+
+Both are measured in **minutes a member was active**, never in messages sent. A message count simply rewards whoever posts most often, and someone works that out within a week. A text minute is a minute in which you sent at least one message — ten messages inside the same minute is one minute. Voice minutes are ordinary elapsed time.
+
+The two are ranked as separate boards rather than added together. A two-hour call is 120 voice minutes while typing in 120 separate minutes is an enormous week, so any combined score would have to invent an exchange rate between them that nobody would agree on. Each board is measured against itself instead.
+
+**Voice only counts while you are actually in company.** Your clock runs when you are unmuted, undeafened, in a normal voice channel that is not the server's AFK channel, and at least one other person is in there with you. Bots do not count as company, and stage channels are excluded entirely — an audience of silent listeners is not a conversation. Your own mute stops only your own clock: somebody listening in silence still counts as company for whoever is talking, since requiring everyone present to be unmuted would let one quiet listener zero out the person actually speaking. Two people in a channel where one is muted means only the unmuted one earns; both muting stops both clocks at once.
+
+What that cannot catch is two friends who *both* leave a call connected overnight, so `SOCIAL_VOICE_DAILY_CAP_MINUTES` (default 240) bounds how much voice time one member can bank in a day. Configuring an AFK channel in Discord helps a great deal here — the bot never counts that channel, so Discord moving idlers into it does the rest of the work. `/health` reports whether you have one.
+
+**Nobody holds more than one badge.** Gamer of the Week has first claim; if the same member also tops a talking board, that badge passes to the next person down and the recap says who really led it. The point is that recognition spreads, not that one member collects the set. `BARD_MIN_MINUTES` (60) and `SCRIBE_MIN_MINUTES` (30) are the floors — pass-down stops there rather than sliding to somebody with four minutes, and if nobody clears the bar the badge is announced as unclaimed and comes off whoever held it. The two numbers are deliberately different: an hour in voice is one ordinary call, an hour of active typing minutes is a very heavy week.
+
+`BARD_ROLE` and `SCRIBE_ROLE` rename the badges, or blank either to disable that one while still recording the minutes. Both take an optional `*_ROLE_ICON` on the same terms as `RECAP_WINNER_ROLE_ICON`. Like the winner badge they are created hoisted, positioned beneath the bot's own role and above the rank roles, and coloured only on creation — orchid and parchment tan, chosen because a badge overrides its holder's rank colour for the whole period and neither may be mistaken for a rank.
+
+**`CAVE_DWELLER_ENABLED` is off, and is the only setting in `.env.example` that defaults to off.** It marks members who did nothing at all last period — no messages, no voice, no games — and it needs an explicit `true` to switch on. Consider it carefully: by its own definition it only reaches people who were not there, so it rewards nobody and is seen by almost nobody. It cannot collide with the other badges, since playing, talking or typing all disqualify you from it, and it comes off the instant a member does any of those rather than waiting for the next recap. The recap reports a count rather than naming anybody, and unlike every other badge it is not hoisted, so it colours a name without carving a public "inactive" section into the member list. `CAVE_DWELLER_GRACE_DAYS` (14) is how long someone must have been in the server, and tracked, before a period can be held against them — nobody who joined on the Friday has earned it. Turning the setting back off leaves any existing roles alone; delete the role in Discord to clear it.
+
+Counting who posted needs only the non-privileged **Guild Messages** intent, and voice needs **Guild Voice States**, which is also non-privileged — neither needs anything enabling in the Developer Portal. The bot never requests **Message Content** and never reads, stores or logs what anybody wrote: it records that you posted, in which server, and nothing else.
+
 ## Checking the bot is alive
 
 `/health` reports whether tracking is actually running. It is restricted to administrators — Discord hides it from
@@ -164,7 +184,10 @@ command has no member option — it only ever acts on whoever ran it.
 
 Opting out stops presence recording immediately (any session in progress is closed rather than left to bank its
 minutes at the next checkpoint) and removes you from **every ranking**: the leaderboards, the server card's most-active
-list, the server records, the weekly recap, and the co-op and inactivity achievements. It does **not** delete anything —
+list, the server records, the weekly recap, the [talking and voice badges](#talking-and-voice-badges), and the co-op and
+inactivity achievements. Messages and voice stop being counted at the same moment, any voice row is dropped along with
+the session, and you cannot be given Cave Dweller — not being measured has to include not being labelled for the
+result. It does **not** delete anything —
 opting back in restores your full history and position. Your own `/stats` card still shows you your own numbers, and
 while you are opted out nobody else can pull it up.
 

@@ -1,6 +1,6 @@
 import { EmbedBuilder, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { db, client } from '../runtime.js';
-import { CARD_ACCENT_COLOR } from '../config.js';
+import { CARD_ACCENT_COLOR, SOCIAL_ENABLED, SOCIAL_VOICE_DAILY_CAP_MINUTES } from '../config.js';
 import { ACHIEVEMENTS } from '../achievements.js';
 import { SERVER_ACHIEVEMENTS } from '../serverAchievements.js';
 import { trackerState } from '../tracking.js';
@@ -57,6 +57,30 @@ function presenceStatus(now) {
   };
 }
 
+/**
+ * How well the voice gate is backed up in this particular server.
+ *
+ * The gate refuses to count anyone alone, muted or deafened, but it cannot tell two friends
+ * talking from two friends who both left the call connected overnight. Discord's AFK channel does
+ * catch that — it moves idlers out, and the gate never counts the AFK room — but *only if the
+ * server has one configured*. Without it the daily cap is the sole backstop, and that fact is
+ * invisible everywhere else, so `/health` is where it belongs.
+ */
+function voiceGateStatus(guild) {
+  const cap = `${SOCIAL_VOICE_DAILY_CAP_MINUTES}m/day cap`;
+  if (!guild.afkChannelId) {
+    return {
+      icon: '🟡',
+      text: `No AFK channel set — idle voice is bounded only by the ${cap}`,
+    };
+  }
+  const minutes = Math.round((guild.afkTimeout ?? 0) / 60);
+  return {
+    icon: '🟢',
+    text: `<#${guild.afkChannelId}> after ${minutes}m idle · ${cap}`,
+  };
+}
+
 export async function handleHealth(interaction) {
   // Discord already hides the command from non-admins via setDefaultMemberPermissions, but a server
   // owner can override that per-command under Server Settings → Integrations, so the real check
@@ -77,6 +101,10 @@ export async function handleHealth(interaction) {
   const unlockedHere = database.ok ? db.getTotalAchievementUnlockCount(interaction.guild.id) : 0;
   const trackedPlayers = database.ok ? db.getTrackedPlayerCount(interaction.guild.id) : 0;
   const serverUnlocked = database.ok ? db.getServerAchievements(interaction.guild.id).length : 0;
+  const voice = database.ok && SOCIAL_ENABLED
+    ? db.getVoiceCounts(interaction.guild.id)
+    : { present: 0, counting: 0 };
+  const voiceGate = voiceGateStatus(interaction.guild);
 
   // Red only for an actual fault. A yellow "quiet" or "still starting up" is not a problem, and
   // colouring it as one trains the reader to ignore the colour.
@@ -94,6 +122,14 @@ export async function handleHealth(interaction) {
       { name: '👥 Tracked players', value: `${trackedPlayers}`, inline: true },
       { name: '🏆 Achievements unlocked', value: `${unlockedHere} personal · ${serverUnlocked}/${SERVER_ACHIEVEMENTS.length} server`, inline: true },
     )
+    .addFields(...(SOCIAL_ENABLED ? [
+      {
+        name: '🎙️ In voice (this server)',
+        value: `${voice.present} present · ${voice.counting} earning`,
+        inline: true,
+      },
+      { name: '🛡️ Voice idle guard', value: `${voiceGate.icon} ${voiceGate.text}`, inline: false },
+    ] : []))
     .setFooter({ text: `${ACHIEVEMENTS.length} personal and ${SERVER_ACHIEVEMENTS.length} server achievements defined` });
 
   await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });

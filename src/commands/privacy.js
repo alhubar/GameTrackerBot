@@ -29,8 +29,16 @@ export function buildStatusEmbed(guildId, userId) {
     `🤝 Co-op partners on record: **${stored.duoPartners}**`,
     `📅 Event RSVPs: **${stored.eventSignups}** · events created: **${stored.eventsCreated}**`,
   ];
+  // Only shown once there is something to show. A member who has never been in voice does not need
+  // a line of zeroes explaining a feature they have not touched.
+  if (stored.social?.days) {
+    rows.push(`💬 Chat activity: **${stored.social.text_minutes}** active ${stored.social.text_minutes === 1 ? 'minute' : 'minutes'}`
+      + ` · 🎙️ voice: **${formatPlayTime(stored.social.voice_minutes * 60)}**`
+      + ` — across **${stored.social.days}** ${stored.social.days === 1 ? 'day' : 'days'}`);
+  }
   if (stored.corrections) rows.push(`✏️ Admin corrections to your stats: **${stored.corrections}**`);
   if (stored.activeSession) rows.push('▶️ You have a session in progress right now.');
+  if (stored.inVoice) rows.push('🎙️ You are in a voice channel right now.');
 
   return new EmbedBuilder()
     .setColor(CARD_ACCENT_COLOR)
