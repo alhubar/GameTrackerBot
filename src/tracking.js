@@ -79,6 +79,11 @@ export async function updateActivity(member, presence) {
   if (member.user.bot) return;
   trackerState.lastPresenceUpdateAt = Date.now();
   trackerState.presenceUpdates += 1;
+  // Opted out: no session, no achievements, no rank reconciliation, no announcements. This is the
+  // single gate for the whole write path — everything downstream of a presence event runs from
+  // here, so nothing else needs to re-check. The counters above still move, because /health is
+  // asking whether the gateway is alive, not whether anyone is being recorded.
+  if (db.isOptedOut(member.guild.id, member.id)) return;
   const oldRank = rankForSeconds(db.getTotalSeconds(member.guild.id, member.id));
   const game = playingGame(presence);
   const now = Date.now();

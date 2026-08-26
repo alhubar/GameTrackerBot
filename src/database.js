@@ -100,6 +100,16 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       sent_at INTEGER NOT NULL,
       PRIMARY KEY (event_id, stage_minutes)
     );
+    -- Members who asked not to be tracked. Presence-based recording stops for them entirely, and
+    -- every *ranking* hides them (see NOT_OPTED_OUT below). Their existing rows are deliberately
+    -- left in place: opting out is reversible, and deleting on opt-out would make it a one-way
+    -- door. /privacy forgetme is the separate, explicit way to actually remove the data.
+    CREATE TABLE IF NOT EXISTS tracking_optouts (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      opted_out_at INTEGER NOT NULL,
+      PRIMARY KEY (guild_id, user_id)
+    );
     -- Every manual stat correction, permanently. Rows are never deleted or edited: an audit log
     -- that can be tidied up is not an audit log, and this is the only record that a member's total
     -- was changed by hand rather than earned. delta_seconds is what was actually applied after
@@ -140,6 +150,20 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     db.exec('ALTER TABLE events ADD COLUMN message_id TEXT');
   }
   db.exec('UPDATE active_sessions SET last_checkpoint_at = started_at WHERE last_checkpoint_at IS NULL');
+
+  /**
+   * Hides opted-out members from a ranking.
+   *
+   * Correlated on the row's own guild and member, so it needs **no extra bound parameter** and
+   * drops into any WHERE over a table carrying those two columns. That matters: these statements
+   * are positional, and threading another `?` through each one is exactly how a filter ends up
+   * applied to the wrong argument.
+   *
+   * Applied to rankings and records only — never to a member's own profile, which is their data to
+   * see, and never to server-wide totals, which are the server's history rather than a roster.
+   */
+  const NOT_OPTED_OUT = (table) =>
+    `NOT EXISTS (SELECT 1 FROM tracking_optouts oo WHERE oo.guild_id = ${table}.guild_id AND oo.user_id = ${table}.user_id)`;
 
   const getStats = db.prepare('SELECT total_seconds FROM member_stats WHERE guild_id = ? AND user_id = ?');
   const addTime = db.prepare(`
@@ -211,6 +235,11 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     SELECT * FROM stat_adjustments WHERE guild_id = ? AND (? IS NULL OR user_id = ?)
     ORDER BY created_at DESC, id DESC LIMIT ?
   `);
+
+  const isOptedOutStmt = db.prepare('SELECT 1 FROM tracking_optouts WHERE guild_id = ? AND user_id = ?');
+  const getOptOutStmt = db.prepare('SELECT opted_out_at FROM tracking_optouts WHERE guild_id = ? AND user_id = ?');
+  const setOptedOutStmt = db.prepare('INSERT OR IGNORE INTO tracking_optouts (guild_id, user_id, opted_out_at) VALUES (?, ?, ?)');
+  const clearOptedOutStmt = db.prepare('DELETE FROM tracking_optouts WHERE guild_id = ? AND user_id = ?');
 
   const getNotificationChannel = db.prepare('SELECT notification_channel_id FROM guild_settings WHERE guild_id = ?');
   const setNotificationChannel = db.prepare(`
@@ -302,10 +331,17 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     SELECT COUNT(DISTINCT game_name) AS count FROM play_sessions
     WHERE guild_id = ? AND user_id = ? AND started_at >= ? AND duration_seconds < ?
   `);
-  const getActiveUsersForGameStmt = db.prepare('SELECT user_id, started_at FROM active_sessions WHERE guild_id = ? AND game_name = ?');
+  // Both feed achievements rather than a board, and both are filtered for the same reason: an
+  // opted-out member should not be counted as somebody's co-op partner, nor be handed Touch Grass
+  // for an absence the bot is no longer meant to be watching.
+  const getActiveUsersForGameStmt = db.prepare(`
+    SELECT user_id, started_at FROM active_sessions
+    WHERE guild_id = ? AND game_name = ? AND ${NOT_OPTED_OUT('active_sessions')}
+  `);
   const getInactivePlayersStmt = db.prepare(`
     SELECT user_id, MAX(ended_at) AS last_ended FROM play_sessions
     WHERE guild_id = ? AND user_id NOT IN (SELECT user_id FROM active_sessions WHERE guild_id = ?)
+    AND ${NOT_OPTED_OUT('play_sessions')}
     GROUP BY user_id HAVING last_ended < ?
   `);
   // "Has this game ever been seen on this server before now?" — deliberately includes the asking
@@ -354,7 +390,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   // all launched the same thing once does not read as a game the whole server plays.
   const getTopGameByPlayerCountStmt = db.prepare(`
     SELECT game_name, COUNT(DISTINCT user_id) AS players FROM game_stats
-    WHERE guild_id = ? AND total_seconds >= ?
+    WHERE guild_id = ? AND total_seconds >= ? AND ${NOT_OPTED_OUT('game_stats')}
     GROUP BY game_name ORDER BY players DESC LIMIT 1
   `);
   // Server records. The longest session can only be read from play_sessions, so it reaches back
@@ -363,13 +399,14 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   // both game counts come from game_stats, which is cumulative.
   const getLongestSessionStmt = db.prepare(`
     SELECT user_id, game_name, duration_seconds FROM play_sessions
-    WHERE guild_id = ? ORDER BY duration_seconds DESC LIMIT 1
+    WHERE guild_id = ? AND ${NOT_OPTED_OUT('play_sessions')}
+    ORDER BY duration_seconds DESC LIMIT 1
   `);
   // Same minSeconds bar as the collection ladder, so "most games" here means the same thing it
   // means on a member's own card. Counting bare launches would let one busy evening beat a library.
   const getTopCollectorStmt = db.prepare(`
     SELECT user_id, COUNT(DISTINCT game_name) AS games FROM game_stats
-    WHERE guild_id = ? AND total_seconds >= ?
+    WHERE guild_id = ? AND total_seconds >= ? AND ${NOT_OPTED_OUT('game_stats')}
     GROUP BY user_id ORDER BY games DESC LIMIT 1
   `);
   const getConcurrentGameCountStmt = db.prepare('SELECT COUNT(DISTINCT game_name) AS count FROM active_sessions WHERE guild_id = ?');
@@ -440,6 +477,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 
   const getLeaderboardStmt = db.prepare(`
     SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
+    AND ${NOT_OPTED_OUT('member_stats')}
     ORDER BY total_seconds DESC LIMIT ?
   `);
   // Completed sessions clamped to the window, plus whatever the live sessions have earned inside
@@ -450,7 +488,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       SELECT user_id, CASE WHEN ended_at > ? THEN
         CAST((MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
         ELSE 0 END AS seconds
-      FROM play_sessions WHERE guild_id = ?
+      FROM play_sessions WHERE guild_id = ? AND ${NOT_OPTED_OUT('play_sessions')}
 
       UNION ALL
 
@@ -459,7 +497,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
           - (CASE WHEN paused_at IS NOT NULL THEN MAX(0, ? - paused_at) ELSE 0 END),
         ? - ?
       )) / 1000 AS INTEGER) AS seconds
-      FROM active_sessions WHERE guild_id = ?
+      FROM active_sessions WHERE guild_id = ? AND ${NOT_OPTED_OUT('active_sessions')}
     )
     GROUP BY user_id
     HAVING SUM(seconds) > 0
@@ -607,10 +645,11 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 		`).all(guildId, now, guildId);
       const topPlayers = db.prepare(`
         SELECT user_id, SUM(total_seconds) AS total_seconds FROM (
-          SELECT user_id, total_seconds FROM member_stats WHERE guild_id = ?
+          SELECT user_id, total_seconds FROM member_stats
+          WHERE guild_id = ? AND ${NOT_OPTED_OUT('member_stats')}
           UNION ALL
           SELECT user_id, CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)
-          FROM active_sessions WHERE guild_id = ?
+          FROM active_sessions WHERE guild_id = ? AND ${NOT_OPTED_OUT('active_sessions')}
         ) GROUP BY user_id ORDER BY total_seconds DESC LIMIT ?
       `).all(guildId, now, guildId, Math.max(1, Math.floor(topPlayersLimit)));
       const gamesTracked = db.prepare(`
@@ -776,6 +815,82 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       setMemberTotal.run(guildId, row.user_id, totalAfter);
       removePlaySession.run(sessionId);
       return { session: row, appliedSeconds: applied, totalBefore, totalAfter, gameAfter };
+    }),
+
+    // ---- Opt-out and erasure -----------------------------------------------------------------
+
+    isOptedOut: (guildId, userId) => !!isOptedOutStmt.get(guildId, userId),
+    getOptOutAt: (guildId, userId) => getOptOutStmt.get(guildId, userId)?.opted_out_at ?? null,
+    /** Also closes any session in flight, so the minutes since the last checkpoint are not banked later. */
+    optOut: db.transaction((guildId, userId, now = Date.now()) => {
+      const closed = closeSession(guildId, userId, now);
+      setOptedOutStmt.run(guildId, userId, now);
+      return closed;
+    }),
+    optIn: (guildId, userId) => clearOptedOutStmt.run(guildId, userId).changes === 1,
+
+    /** What this member has on record, for the /privacy status view. Counts only — never contents. */
+    getStoredDataSummary(guildId, userId) {
+      const count = (sql, ...params) => db.prepare(sql).get(guildId, userId, ...params).n;
+      return {
+        totalSeconds: getStats.get(guildId, userId)?.total_seconds ?? 0,
+        games: count('SELECT COUNT(*) AS n FROM game_stats WHERE guild_id = ? AND user_id = ?'),
+        sessions: count('SELECT COUNT(*) AS n FROM play_sessions WHERE guild_id = ? AND user_id = ?'),
+        achievements: count('SELECT COUNT(*) AS n FROM achievements_unlocked WHERE guild_id = ? AND user_id = ?'),
+        activeSession: !!getSession.get(guildId, userId),
+        // A pair table, so this is also the number of other members whose duo count would drop.
+        duoPartners: db.prepare(`
+          SELECT COUNT(DISTINCT partner) AS n FROM (
+            SELECT user_id_b AS partner FROM duo_days WHERE guild_id = ? AND user_id_a = ?
+            UNION SELECT user_id_a FROM duo_days WHERE guild_id = ? AND user_id_b = ?
+          )
+        `).get(guildId, userId, guildId, userId).n,
+        eventSignups: db.prepare(`
+          SELECT COUNT(*) AS n FROM event_signups s JOIN events e ON e.id = s.event_id
+          WHERE e.guild_id = ? AND s.user_id = ?
+        `).get(guildId, userId).n,
+        eventsCreated: count('SELECT COUNT(*) AS n FROM events WHERE guild_id = ? AND creator_id = ?'),
+        corrections: count('SELECT COUNT(*) AS n FROM stat_adjustments WHERE guild_id = ? AND user_id = ?'),
+      };
+    },
+
+    /**
+     * Erases everything this bot holds about one member of one guild. Irreversible by design —
+     * the only way back is a backup.
+     *
+     * Two things are deliberately not simple deletes. `duo_days` is a *pair* table, so removing
+     * these rows also lowers the co-op day count of everyone they played alongside; that is
+     * unavoidable and is disclosed before the member confirms. And `stat_adjustments` rows where
+     * they were the *actor* are kept but anonymised rather than dropped: those rows document a
+     * change made to somebody else's totals, which is that other member's record, not this one's.
+     */
+    purgeMember: db.transaction((guildId, userId) => {
+      const removed = {};
+      const run = (label, sql, ...params) => { removed[label] = db.prepare(sql).run(guildId, userId, ...params).changes; };
+      run('activeSessions', 'DELETE FROM active_sessions WHERE guild_id = ? AND user_id = ?');
+      run('sessions', 'DELETE FROM play_sessions WHERE guild_id = ? AND user_id = ?');
+      run('games', 'DELETE FROM game_stats WHERE guild_id = ? AND user_id = ?');
+      run('achievements', 'DELETE FROM achievements_unlocked WHERE guild_id = ? AND user_id = ?');
+      run('stats', 'DELETE FROM member_stats WHERE guild_id = ? AND user_id = ?');
+      run('corrections', 'DELETE FROM stat_adjustments WHERE guild_id = ? AND user_id = ?');
+      removed.duoDays = db.prepare(
+        'DELETE FROM duo_days WHERE guild_id = ? AND (user_id_a = ? OR user_id_b = ?)',
+      ).run(guildId, userId, userId).changes;
+      removed.eventSignups = db.prepare(`
+        DELETE FROM event_signups WHERE user_id = ?
+        AND event_id IN (SELECT id FROM events WHERE guild_id = ?)
+      `).run(userId, guildId).changes;
+      db.prepare("UPDATE stat_adjustments SET actor_id = '0' WHERE guild_id = ? AND actor_id = ?").run(guildId, userId);
+      // Events they created are anonymised rather than deleted: an upcoming game night belongs to
+      // everyone who signed up for it, and cancelling other people's plans is not what erasing
+      // one member's data should mean. Manage Server can still edit or cancel it afterwards.
+      removed.eventsAnonymised = db.prepare(
+        "UPDATE events SET creator_id = '0' WHERE guild_id = ? AND creator_id = ?",
+      ).run(guildId, userId).changes;
+      // `tracking_optouts` is deliberately left alone. Erasing is about the data already held, not
+      // about consent going forward: somebody who opted out and then erased wants to stay
+      // untracked, and clearing the row here would quietly switch recording back on for them.
+      return removed;
     }),
 
     recordAdjustment: ({ guildId, userId, actorId, kind, gameName = null, deltaSeconds, sessionId = null, reason = null }, now = Date.now()) =>

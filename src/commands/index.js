@@ -10,6 +10,7 @@ import { handleEvent } from './event.js';
 import { handleHealth } from './health.js';
 import { handleBackup } from './backup.js';
 import { handleAdjust, handleAdjustAutocomplete } from './adjust.js';
+import { handlePrivacy } from './privacy.js';
 
 /**
  * Slash command definitions and the name → handler table.
@@ -58,6 +59,13 @@ export const commands = [
     .addSubcommand((sub) => sub.setName('log').setDescription('Show recent corrections')
       .addUserOption((option) => option.setName('member').setDescription('Only this member (defaults to the whole server)')))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  // Deliberately available to everyone and deliberately has no member option: these are controls
+  // over the caller's own data, and every reply is ephemeral.
+  new SlashCommandBuilder().setName('privacy').setDescription('Control whether you are tracked, and see what is stored about you')
+    .addSubcommand((sub) => sub.setName('status').setDescription('Show your tracking status and what is stored about you'))
+    .addSubcommand((sub) => sub.setName('optout').setDescription('Stop being tracked and hide yourself from the rankings'))
+    .addSubcommand((sub) => sub.setName('optin').setDescription('Resume tracking and reappear on the rankings'))
+    .addSubcommand((sub) => sub.setName('forgetme').setDescription('Permanently erase everything stored about you')),
 ].map((command) => command.toJSON());
 
 const HANDLERS = {
@@ -71,6 +79,7 @@ const HANDLERS = {
   health: handleHealth,
   backup: handleBackup,
   adjust: handleAdjust,
+  privacy: handlePrivacy,
 };
 
 // Separate from HANDLERS: an autocomplete interaction is a different Discord type that must be

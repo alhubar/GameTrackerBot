@@ -39,7 +39,7 @@ You can customize every announcement independently with `LEVEL_UP_MESSAGE_1` thr
 4. In the Discord Developer Portal, enable **Presence Intent** and **Server Members Intent** under **Bot → Privileged Gateway Intents**.
 5. Invite the bot with the `bot` and `applications.commands` scopes. Give it **Manage Roles**, and put its role above the tracker roles in the server role list.
 6. Start it with `npm start`.
-7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`. Manage Server also gets `/backup` ([Backups](#backups)), and administrators get `/health` ([Checking the bot is alive](#checking-the-bot-is-alive)) and `/adjust` ([Correcting bad stats](#correcting-bad-stats)).
+7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`, and `/privacy` to control your own tracking ([Privacy and opting out](#privacy-and-opting-out)). Manage Server also gets `/backup` ([Backups](#backups)), and administrators get `/health` ([Checking the bot is alive](#checking-the-bot-is-alive)) and `/adjust` ([Correcting bad stats](#correcting-bad-stats)).
 
 `data/tracker.sqlite` is created automatically, and the bot keeps a rotating set of nightly backups of it — see
 [Backups](#backups).
@@ -151,6 +151,31 @@ same day-stamped name, so it replaces the day's copy rather than adding to the s
 
 Point `BACKUP_DIR` at a different disk than the database if you can. A backup beside the original does not survive
 losing the drive.
+
+## Privacy and opting out
+
+Any member can control their own tracking with `/privacy`, without needing an admin. Every reply is private, and the
+command has no member option — it only ever acts on whoever ran it.
+
+- **`/privacy status`** — whether you are being tracked, and a count of everything stored about you in this server.
+- **`/privacy optout`** — stop being tracked.
+- **`/privacy optin`** — resume.
+- **`/privacy forgetme`** — permanently erase everything, behind a confirmation button.
+
+Opting out stops presence recording immediately (any session in progress is closed rather than left to bank its
+minutes at the next checkpoint) and removes you from **every ranking**: the leaderboards, the server card's most-active
+list, the server records, the weekly recap, and the co-op and inactivity achievements. It does **not** delete anything —
+opting back in restores your full history and position. Your own `/stats` card still shows you your own numbers, and
+while you are opted out nobody else can pull it up.
+
+Two things deliberately stay put. **Server-wide totals still include your past playtime**, because those are the
+server's history rather than a roster of who is here — the same reasoning that keeps departed members in them. And your
+**rank role is left alone**; opting out is meant to be quiet, not to visibly change your colour in the member list.
+
+`/privacy forgetme` is the irreversible one, and there is no undo short of restoring a [backup](#backups). Two
+consequences it warns you about before you confirm: co-op days are stored as *pairs*, so erasing yours also lowers the
+co-op counts of everyone you played alongside, and events you created stay up (so nobody's plans are cancelled) but
+stop naming you. Erasing does not change your tracking setting either way — if you opted out first, you stay opted out.
 
 ## Correcting bad stats
 

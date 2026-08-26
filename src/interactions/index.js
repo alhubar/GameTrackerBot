@@ -5,6 +5,7 @@ import {
   handleTimezoneCreateSelect, handleTimezoneEditSelect,
   handleEventCreateModal, handleEventEditModal,
 } from './events.js';
+import { handlePrivacyButton } from './privacy.js';
 import { handleChatInputCommand, handleAutocomplete } from '../commands/index.js';
 
 /**
@@ -21,6 +22,7 @@ function route(interaction) {
   if (interaction.isButton()) {
     if (interaction.customId.startsWith('card:')) return handleCardButton;
     if (interaction.customId.startsWith('event:')) return handleEventButton;
+    if (interaction.customId.startsWith('privacy:')) return handlePrivacyButton;
     return null;
   }
   if (interaction.isStringSelectMenu()) {

@@ -203,6 +203,23 @@ check('reminder rows whose event is gone', ['event_reminders_sent', 'events'],
   'SELECT r.event_id, r.stage_minutes FROM event_reminders_sent r LEFT JOIN events e ON e.id = r.event_id WHERE e.id IS NULL',
   expectFalsy('ERROR', 'none', (r) => `${plural(r.length, 'row')} orphaned`));
 
+console.log('\nOpt-outs');
+// Informational, not a fault. Worth surfacing because an opted-out member is filtered out of every
+// ranking, so "why is X missing from the leaderboard" has an answer here rather than in the data.
+check('members opted out of tracking', ['tracking_optouts'],
+  'SELECT guild_id, COUNT(*) AS n FROM tracking_optouts GROUP BY guild_id',
+  (rows, label) => {
+    if (!rows.length) { report('OK', label, 'none'); return; }
+    report('NOTE', label, rows.map((r) => `guild ${r.guild_id}: ${plural(r.n, 'member')}`).join('; '), rows);
+  });
+
+check('opted-out members with a session still running', ['tracking_optouts', 'active_sessions'],
+  // optOut closes the session in flight inside the same transaction, so a survivor means something
+  // wrote an active_sessions row for a member the tracker is supposed to be ignoring.
+  `SELECT o.guild_id, o.user_id FROM tracking_optouts o
+     JOIN active_sessions s ON s.guild_id = o.guild_id AND s.user_id = o.user_id`,
+  expectFalsy('WARN', 'none', (r) => `${plural(r.length, 'session')} running for an opted-out member`));
+
 console.log('\nManual corrections');
 // Not a fault of any kind — but a total that was set by hand is otherwise indistinguishable from
 // one that was earned, and that is exactly the context someone reading this report needs.
