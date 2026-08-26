@@ -40,6 +40,15 @@ export const SCRIBE_ROLE_COLOR = 0xC9A87C;
 export const CAVE_DWELLER_ROLE_COLOR = 0x5A5A5A;
 
 /**
+ * The starting role, for members who have not reached the first rank.
+ *
+ * Discord's own default grey — the colour an uncoloured role already renders as. That is the point:
+ * it is not a rank and should not look like one, so it reads exactly as a member with no rank role
+ * at all did before, while still giving them a name and a section of their own.
+ */
+export const UNRANKED_ROLE_COLOR = 0x8D8D8D;
+
+/**
  * Makes sure the member cache is complete, without asking Discord when it already is.
  *
  * A bare `guild.members.fetch()` is a gateway request on a tight bucket, and one recap now settles
@@ -102,7 +111,7 @@ function colouredRoleAbove(guild, role, siblingRoleNames = []) {
  * Position and colour are applied **only on creation**, so a server that recolours or reorders a
  * badge by hand keeps its choice — the same rule the rank roles already follow.
  */
-async function ensureBadgeRole(guild, {
+export async function ensureBadgeRole(guild, {
   roleName, roleIcon = null, color = WINNER_ROLE_COLOR,
   hoist = true, reason = `${roleName} — badge`, siblingRoleNames = [], placement = 'top',
 } = {}) {

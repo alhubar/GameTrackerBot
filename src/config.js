@@ -44,6 +44,19 @@ export const DEFAULT_ROLE_COLORS = [
 
 export const DEFAULT_RANK_EMOJIS = ['⬜', '🟩', '🟦', '🟨', '🟧', '🟥', '🟪'];
 
+/**
+ * A role for members who have not reached the first rank — a name for "unranked" rather than a
+ * rank of its own. Blank disables it, which is the default.
+ *
+ * Deliberately NOT an entry in RANK_NAMES. Putting it there would make it rank 0 at zero hours, and
+ * then nobody is ever unranked — which quietly removes the guard on the achievements that ask
+ * whether somebody was ever established (welcome_back, touch_grass), letting them fire for a member
+ * who has never played a minute. Kept outside the ladder, it changes nothing any stat can see:
+ * rankForSeconds still answers -1, the leaderboard still sorts the same, and inserting it can never
+ * shift the rank indices and rename the ladder underneath its holders.
+ */
+export const UNRANKED_ROLE = process.env.UNRANKED_ROLE?.trim() ?? '';
+
 export const ACHIEVEMENT_ANNOUNCEMENTS = process.env.ACHIEVEMENT_ANNOUNCEMENTS?.trim().toLowerCase() !== 'false';
 export const ACHIEVEMENT_CHANNEL = process.env.ACHIEVEMENT_CHANNEL?.trim();
 export const LEVEL_UP_CHANNEL = process.env.LEVEL_UP_CHANNEL?.trim();

@@ -3,9 +3,11 @@ import { db } from './runtime.js';
 import { memberRef } from './log.js';
 import {
   DEFAULT_ROLE_COLORS, LEVEL_UP_CHANNEL, PAUSE_ON_IDLE,
-  SOCIAL_ENABLED, CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE,
+  SOCIAL_ENABLED, CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE, UNRANKED_ROLE,
 } from './config.js';
-import { removeRankRoles, removeRoleByName, ensureMembersCached } from './roles.js';
+import {
+  removeRankRoles, removeRoleByName, ensureMembersCached, ensureBadgeRole, UNRANKED_ROLE_COLOR,
+} from './roles.js';
 import { findTextChannel } from './ui.js';
 import { RANKS, RANK_HOURS, formatHours, levelUpMessageTemplate, rankForSeconds, roleName } from './ranks.js';
 import {
@@ -78,6 +80,29 @@ export async function noteSociallyActive(member) {
   if (had) await syncRank(member).catch(console.error);
 }
 
+/**
+ * Puts the starting role on a member who has not reached the first rank, or takes it off one who
+ * has. A no-op when UNRANKED_ROLE is blank, which is the default.
+ *
+ * This is a name for unranked, not a rank. It is deliberately outside RANK_NAMES so that no stat
+ * can see it: rankForSeconds still answers -1 for these members, the leaderboard sorts them exactly
+ * as before, and the achievements that gate on having reached the first rank keep their meaning.
+ */
+async function applyUnrankedRole(member, unranked) {
+  if (!UNRANKED_ROLE) return;
+  if (!unranked) { await removeRoleByName(member, UNRANKED_ROLE); return; }
+  const role = await ensureBadgeRole(member.guild, {
+    roleName: UNRANKED_ROLE,
+    color: UNRANKED_ROLE_COLOR,
+    // Beneath every rank, where a member who has not earned one belongs.
+    placement: 'bottom',
+    reason: `${UNRANKED_ROLE} — starting role`,
+  });
+  if (!role || member.roles.cache.has(role.id)) return;
+  await member.roles.add(role, `${UNRANKED_ROLE} — not yet ranked`)
+    .catch((error) => console.error(`Could not give the ${UNRANKED_ROLE} role to ${memberRef(member.id)}:`, error));
+}
+
 export async function syncRank(member) {
   if (member.user.bot) return;
   // A Cave Dweller wears no rank while they hold the badge. On a server that hoists its rank roles
@@ -88,6 +113,9 @@ export async function syncRank(member) {
   // role is rebuilt the moment they do anything.
   if (isCaveDweller(member)) {
     await removeRankRoles(member, rankRoleIds(member.guild), `Wearing ${CAVE_DWELLER_ROLE}`);
+    // The starting role goes too. It is not a rank, but it is hoisted and sits above the badge, so
+    // leaving it on would decide the member's section and hide the thing being awarded.
+    await removeRoleByName(member, UNRANKED_ROLE);
     return false;
   }
   const total = db.getTotalSeconds(member.guild.id, member.id);
@@ -99,6 +127,7 @@ export async function syncRank(member) {
   const roles = member.guild.roles.cache.filter((role) => trackedRoleIds.has(role.id));
   const remove = roles.filter((role) => role.id !== target?.id && member.roles.cache.has(role.id));
   if (remove.size) await member.roles.remove(remove, 'Game tracker rank changed');
+  await applyUnrankedRole(member, rankIndex < 0);
   if (!target) return roles.size > 0; // No rank below the first configured threshold.
   if (!member.roles.cache.has(target.id)) await member.roles.add(target, 'Game tracker rank changed');
   return true;
