@@ -156,7 +156,9 @@ export function buildSocialBadgesEmbed(awards, {
         lines.push(`_${nameOf(userId)} topped ${badge.label}, but already wears another badge_`);
       }
     }
-    embed.addFields({ name: `${badge.emoji} ${badge.roleName}`, value: lines.join('\n'), inline: true });
+    // Stacked, not inline. Three badges side by side squeeze a two-line citation into a narrow
+    // column and wrap it into a ragged block; each one gets the full width instead.
+    embed.addFields({ name: `${badge.emoji} ${badge.roleName}`, value: lines.join('\n'), inline: false });
   }
 
   // Named rather than counted. The role is visible on its holders anyway, so a count was hiding
@@ -173,7 +175,7 @@ export function buildSocialBadgesEmbed(awards, {
       value: names.length
         ? `**${shown.join('**, **')}**${rest ? ` _and ${rest} more_` : ''} watching from the shadows`
         : `_Nobody — everyone turned up this ${range.periodNoun}_`,
-      inline: true,
+      inline: false,
     });
   }
 
