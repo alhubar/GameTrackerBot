@@ -34,7 +34,7 @@ const TOP_PLAYERS_CANDIDATES = 25;
  * One bulk fetch, skipped entirely when the cache already holds the whole guild, so the several
  * calls a single `/stats` card makes cost at most one round trip between them.
  */
-async function presentMemberIds(guild) {
+export async function presentMemberIds(guild) {
   if (guild.memberCount && guild.members.cache.size >= guild.memberCount) {
     return new Set(guild.members.cache.keys());
   }

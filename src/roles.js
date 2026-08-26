@@ -17,7 +17,21 @@ import { memberRef } from './log.js';
 export const WINNER_ROLE_COLOR = 0x95FDFF;
 
 /**
- * Takes the badge off everyone, for a period nobody earned. The role itself is left in place so it
+ * The weekly social badges, in the same spirit as the colour above and chosen the same way.
+ *
+ * A badge outranks the rank roles, so whoever holds one wears its colour for the whole period —
+ * which means neither of these may read as a rank. The rank palette is white, green, blue, yellow,
+ * orange, red and purple, and the winner badge is already a pale cyan, so an orchid and a
+ * parchment tan are two of the few places left that cannot be mistaken for something earned.
+ *
+ * Only applied when the role is CREATED, exactly like the winner badge: a colour changed by hand
+ * in Discord afterwards is left alone.
+ */
+export const BARD_ROLE_COLOR = 0xE2A0D8;
+export const SCRIBE_ROLE_COLOR = 0xC9A87C;
+
+/**
+ * Takes a badge off everyone, for a period nobody earned it. The role itself is left in place so it
  * keeps its position and colour for next time.
  */
 export async function clearWinnerRole(guild, roleName) {
@@ -32,6 +46,9 @@ export async function clearWinnerRole(guild, roleName) {
   return role;
 }
 
+/** Reusable alias: the same operation, for a badge that is not the playtime one. */
+export const clearBadgeRole = clearWinnerRole;
+
 /**
  * Hands the monthly winner's badge over: create the role if needed, strip it from whoever held it,
  * then give it to the new winner. Returns the role, or null if it could not be created.
@@ -39,29 +56,51 @@ export async function clearWinnerRole(guild, roleName) {
  * Lives here rather than in index.js so the preview script can exercise the real thing.
  */
 export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = null } = {}) {
+  return awardBadgeRole(guild, winnerId, {
+    roleName,
+    roleIcon,
+    color: WINNER_ROLE_COLOR,
+    positionFromTop: 1,
+    reason: `${roleName} — winner badge`,
+    awardReason: `${roleName} — gamer of the month`,
+  });
+}
+
+/**
+ * The general form: hand one badge role over to one member.
+ *
+ * `positionFromTop` is how far beneath the bot's own role the badge sits when it is first created,
+ * so several badges can stack in a fixed order instead of fighting over the same slot. The order
+ * among them is cosmetic — nobody ever holds two, by the award pass's own rule — but Champion of
+ * the Realm keeps the top slot because it is the badge the ranks belong to.
+ */
+export async function awardBadgeRole(guild, userId, {
+  roleName, roleIcon = null, color = WINNER_ROLE_COLOR, positionFromTop = 1,
+  reason = `${roleName} — badge`, awardReason = `${roleName} — awarded`,
+} = {}) {
   if (!roleName) return null;
   let role = guild.roles.cache.find((candidate) => candidate.name === roleName);
   const isNew = !role;
   role ??= await guild.roles.create({
     name: roleName,
     // discord.js 14.22 deprecated the flat `color` in favour of `colors`.
-    colors: { primaryColor: WINNER_ROLE_COLOR },
+    colors: { primaryColor: color },
     hoist: true,
-    reason: `${roleName} — winner badge`,
+    reason,
   }).catch((error) => {
-    console.error('Could not create the winner role:', error);
+    console.error(`Could not create the ${roleName} role:`, error);
     return null;
   });
   if (!role) return null;
 
   // Discord creates roles at the bottom, where every rank role sits above and overrides the badge.
   // A member's name takes the colour of their highest coloured role, so the badge has to outrank
-  // them — put it directly beneath the bot's own role, the highest slot it is allowed to use.
+  // them — put it just beneath the bot's own role, the highest slot it is allowed to use.
   if (isNew) {
     const ceiling = guild.members.me?.roles.highest.position;
     if (ceiling && ceiling > 1) {
-      await role.setPosition(ceiling - 1, { reason: 'Badge colour must outrank the rank roles' })
-        .catch((error) => console.error('Could not raise the winner role:', error));
+      await role.setPosition(Math.max(1, ceiling - positionFromTop), { reason: 'Badge colour must outrank the rank roles' })
+        .catch((error) => console.error(`Could not raise the ${roleName} role:`, error));
     }
   }
 
@@ -76,14 +115,17 @@ export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = nu
   // silently keep the badge without this.
   await guild.members.fetch().catch(() => null);
   for (const holder of role.members.values()) {
-    if (holder.id === winnerId) continue;
+    if (holder.id === userId) continue;
     await holder.roles.remove(role, `No longer ${roleName}`).catch((error) =>
-      console.error(`Could not take the monthly role from ${memberRef(holder.id)}:`, error));
+      console.error(`Could not take the ${roleName} role from ${memberRef(holder.id)}:`, error));
   }
-  const winner = await guild.members.fetch(winnerId).catch(() => null);
-  if (winner && !winner.roles.cache.has(role.id)) {
-    await winner.roles.add(role, `${roleName} — gamer of the month`).catch((error) =>
-      console.error('Could not award the monthly role:', error));
+  // A badge with no holder this period still strips cleanly above, which is what makes an
+  // unclaimed badge a real outcome rather than one that quietly stays on last period's winner.
+  if (!userId) return role;
+  const recipient = await guild.members.fetch(userId).catch(() => null);
+  if (recipient && !recipient.roles.cache.has(role.id)) {
+    await recipient.roles.add(role, awardReason).catch((error) =>
+      console.error(`Could not award the ${roleName} role:`, error));
   }
   return role;
 }

@@ -5,6 +5,9 @@ import { achievementById } from './achievements.js';
 export const ACHIEVEMENT_GOLD = 0xF1C40F;
 /** Muted grey for the weeks nobody earned the title — a non-event should not look like a triumph. */
 const RECAP_EMPTY_GREY = 0x99AAB5;
+/** The social badges' own card. Deliberately not the gold the playtime recap uses — it sits
+ *  directly beneath that card, and matching it would read as one long celebration of one person. */
+const SOCIAL_BADGE_BLUE = 0x5865F2;
 const PODIUM_MEDALS = ['🥇', '🥈', '🥉'];
 
 /** The card posted when a member unlocks a personal achievement. */
@@ -86,6 +89,77 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
       ? `Wears the ${roleName} badge until next ${range.periodNoun}'s recap`
       : `Top of the leaderboard last ${range.periodNoun}`,
   });
+  return embed;
+}
+
+/**
+ * The companion card for the social badges, posted in the same message as the playtime recap.
+ *
+ * A second embed rather than more fields on the first: the playtime card already carries three,
+ * and Discord lays inline fields out three to a row, so folding two more in would wrap them into a
+ * ragged second row underneath. As a separate card the badges read as their own section, and the
+ * whole thing is still one post.
+ *
+ * Returns null when neither badge is configured, so the caller can simply omit it.
+ *
+ * Where a badge was passed over, the reason sits with the badge rather than under the member who
+ * was denied it. That is the opposite of what the spec first said, and it is better: the question
+ * a reader actually has is "why did the top talker not get this?", and it is asked while looking
+ * at the badge, not while looking at somebody else's name three lines up.
+ */
+export function buildSocialBadgesEmbed(awards, {
+  displayNames, range, bardRoleName = null, scribeRoleName = null,
+  bardFloorMinutes = 0, scribeFloorMinutes = 0,
+}) {
+  const badges = [
+    {
+      roleName: bardRoleName,
+      emoji: '🎵',
+      award: awards.bard,
+      label: 'voice',
+      floor: bardFloorMinutes,
+      // Voice time is one continuous stretch, so it reads as a duration.
+      describe: (row) => `${formatPlayTime(row.voice_minutes * 60)} in voice`,
+      floorText: (floor) => `nobody reached ${formatPlayTime(floor * 60)} in voice`,
+    },
+    {
+      roleName: scribeRoleName,
+      emoji: '✍️',
+      award: awards.scribe,
+      label: 'text',
+      floor: scribeFloorMinutes,
+      // Text minutes are a count of separate minutes somebody was typing in, never one stretch —
+      // rendering them as "1h 30m" would claim an hour and a half of continuous typing.
+      describe: (row) => `${row.text_minutes} active ${row.text_minutes === 1 ? 'minute' : 'minutes'} of chat`,
+      floorText: (floor) => `nobody reached ${floor} active minutes of chat`,
+    },
+  ].filter((badge) => badge.roleName);
+
+  if (!badges.length) return null;
+
+  const nameOf = (userId) => displayNames.get(userId) ?? 'Unknown member';
+  const embed = new EmbedBuilder()
+    .setColor(SOCIAL_BADGE_BLUE)
+    .setAuthor({ name: '🎖️ Also this week' });
+
+  for (const badge of badges) {
+    const lines = [];
+    if (badge.award) {
+      lines.push(`**${nameOf(badge.award.user_id)}**`, badge.describe(badge.award));
+    } else {
+      lines.push('*Unclaimed*', badge.floor ? `_${badge.floorText(badge.floor)}_` : '_nobody qualified_');
+    }
+    // Whoever led this board without being given it. Naming them here explains the result exactly
+    // where it looks surprising, and keeps a genuine double winner from being written out of it.
+    for (const [userId, boards] of awards.alsoTopped ?? []) {
+      if (boards.includes(badge.label) && userId !== badge.award?.user_id) {
+        lines.push(`_${nameOf(userId)} topped ${badge.label}, but already wears another badge_`);
+      }
+    }
+    embed.addFields({ name: `${badge.emoji} ${badge.roleName}`, value: lines.join('\n'), inline: true });
+  }
+
+  embed.setFooter({ text: `Held until next ${range.periodNoun}'s recap` });
   return embed;
 }
 

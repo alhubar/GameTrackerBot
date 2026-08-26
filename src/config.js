@@ -78,6 +78,25 @@ if (!Number.isInteger(SOCIAL_VOICE_DAILY_CAP_MINUTES) || SOCIAL_VOICE_DAILY_CAP_
   throw new Error(`SOCIAL_VOICE_DAILY_CAP_MINUTES must be a whole number of at least 1 — got "${process.env.SOCIAL_VOICE_DAILY_CAP_MINUTES}".`);
 }
 
+// The two social badges. A blank name disables that badge without touching the other, and without
+// stopping the minutes being recorded — turning a name back on resumes awarding from real history.
+export const BARD_ROLE = process.env.BARD_ROLE?.trim() ?? 'Bard';
+export const BARD_ROLE_ICON = process.env.BARD_ROLE_ICON?.trim();
+export const SCRIBE_ROLE = process.env.SCRIBE_ROLE?.trim() ?? 'Scribe';
+export const SCRIBE_ROLE_ICON = process.env.SCRIBE_ROLE_ICON?.trim();
+
+// Each board carries its own floor, because the two units are not comparable: an hour of voice is
+// one ordinary call, while an hour of *active typing minutes* is a very heavy week. A leader below
+// the floor leaves the badge unclaimed rather than being crowned for a token contribution.
+export const BARD_MIN_MINUTES = Number(process.env.BARD_MIN_MINUTES ?? '60');
+if (!Number.isInteger(BARD_MIN_MINUTES) || BARD_MIN_MINUTES < 0) {
+  throw new Error(`BARD_MIN_MINUTES must be a whole number of 0 or more — got "${process.env.BARD_MIN_MINUTES}".`);
+}
+export const SCRIBE_MIN_MINUTES = Number(process.env.SCRIBE_MIN_MINUTES ?? '30');
+if (!Number.isInteger(SCRIBE_MIN_MINUTES) || SCRIBE_MIN_MINUTES < 0) {
+  throw new Error(`SCRIBE_MIN_MINUTES must be a whole number of 0 or more — got "${process.env.SCRIBE_MIN_MINUTES}".`);
+}
+
 // Anti-idle tracking. Discord flips a member to "idle" after roughly ten minutes without input but
 // keeps reporting whatever game is still open, so a launcher left running overnight would otherwise
 // bank a full night of playtime and outrank everyone who actually played.
