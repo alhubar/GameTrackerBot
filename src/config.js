@@ -19,6 +19,19 @@ export const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 export const DATABASE_PATH = process.env.DATABASE_PATH?.trim() || undefined;
 export const GUILD_ID = process.env.GUILD_ID;
 
+export const BACKUP_ENABLED = process.env.BACKUP_ENABLED?.trim().toLowerCase() !== 'false';
+export const BACKUP_DIR = process.env.BACKUP_DIR?.trim() || 'data/backups';
+export const BACKUP_KEEP = Number(process.env.BACKUP_KEEP ?? '7');
+if (!Number.isInteger(BACKUP_KEEP) || BACKUP_KEEP < 1) {
+  throw new Error(`BACKUP_KEEP must be a whole number of at least 1 — got "${process.env.BACKUP_KEEP}".`);
+}
+// UTC so the nightly copy lands at the same real moment regardless of where the host is, and so a
+// daylight-saving change can never skip or duplicate a night.
+export const BACKUP_HOUR_UTC = Number(process.env.BACKUP_HOUR_UTC ?? '4');
+if (!Number.isInteger(BACKUP_HOUR_UTC) || BACKUP_HOUR_UTC < 0 || BACKUP_HOUR_UTC > 23) {
+  throw new Error(`BACKUP_HOUR_UTC must be a whole number from 0 to 23 — got "${process.env.BACKUP_HOUR_UTC}".`);
+}
+
 export const DEFAULT_ROLE_COLORS = [
   0xFFFFFF, // white
   0x57F287, // green

@@ -656,6 +656,11 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       return sessions;
     },
     close: () => db.close(),
+    /**
+     * SQLite's online backup API, not a file copy. It produces one consistent file while the bot
+     * keeps writing — a plain copy of the .sqlite/-wal/-shm trio can catch a checkpoint mid-commit.
+     */
+    backup: (destination) => db.backup(destination),
 
     // Achievements
     hasAchievement: (guildId, userId, achievementId) => !!hasAchievementStmt.get(guildId, userId, achievementId),

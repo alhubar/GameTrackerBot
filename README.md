@@ -41,7 +41,8 @@ You can customize every announcement independently with `LEVEL_UP_MESSAGE_1` thr
 6. Start it with `npm start`.
 7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`. Administrators also get `/health` — see [Checking the bot is alive](#checking-the-bot-is-alive).
 
-`data/tracker.sqlite` is created automatically. Back it up if you want to preserve history when moving the bot.
+`data/tracker.sqlite` is created automatically, and the bot keeps a rotating set of nightly backups of it — see
+[Backups](#backups).
 
 ## Notes
 
@@ -130,6 +131,26 @@ those apart:
 
 Alongside those it shows uptime, gateway latency, guild count, whether the database is readable, the number of active
 sessions, tracked players, and how many achievements have been unlocked.
+
+## Backups
+
+Once a day at `BACKUP_HOUR_UTC` (default 04:00 UTC) the bot writes a copy of the database to `BACKUP_DIR`
+(default `data/backups`) named `tracker-YYYY-MM-DD.sqlite`, then deletes everything past the newest `BACKUP_KEEP`
+(default 7). Set `BACKUP_ENABLED=false` to turn the schedule off.
+
+The copy goes through SQLite's online backup API rather than a file copy, so it is a consistent snapshot taken while
+the bot is still running — there is no need to stop anything, and no `-wal`/`-shm` files to keep alongside it. Each is a
+complete database: to restore one, stop the bot, put it where `DATABASE_PATH` points, and start again.
+
+Whether the night's copy has been taken is read off the filenames already in the directory rather than stored
+anywhere, so restarting the bot can neither skip a night nor take a second copy. A bot that was down at the scheduled
+hour takes that day's copy when it comes back up.
+
+Members with **Manage Server** can also run `/backup` for a copy on demand — before a risky change, say. It writes the
+same day-stamped name, so it replaces the day's copy rather than adding to the series.
+
+Point `BACKUP_DIR` at a different disk than the database if you can. A backup beside the original does not survive
+losing the drive.
 
 ## Maintenance
 

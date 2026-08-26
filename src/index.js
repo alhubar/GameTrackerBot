@@ -2,6 +2,7 @@ import { Events } from 'discord.js';
 import { db, client } from './runtime.js';
 import {
   DISCORD_TOKEN, GUILD_ID, MAX_SESSION_MS, RECAP_ENABLED, EVENT_REMINDER_STAGES_MINUTES,
+  BACKUP_ENABLED, BACKUP_DIR, BACKUP_KEEP, BACKUP_HOUR_UTC,
 } from './config.js';
 import { commands } from './commands/index.js';
 import { handleInteraction } from './interactions/index.js';
@@ -10,6 +11,7 @@ import { announceAchievements, announceRecap, checkServerAchievements } from './
 import { rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
 import { collectDueReminders } from './events.js';
+import { isBackupDue, runBackup } from './backup.js';
 
 /**
  * Wiring only: connect Discord's events and the periodic loops to the modules that do the work.
@@ -132,6 +134,20 @@ setInterval(async () => {
     db.deleteEvent(event.id);
   }
 }, 60_000).unref();
+
+// Take the nightly copy once BACKUP_HOUR_UTC arrives. Checked hourly rather than scheduled to a
+// single moment, so a bot that was down at the hour still gets that day's copy when it comes back.
+// Whether tonight's is already taken is read off the filenames, so this cannot double-post either.
+if (BACKUP_ENABLED) {
+  setInterval(async () => {
+    const now = Date.now();
+    if (!isBackupDue(BACKUP_DIR, now, BACKUP_HOUR_UTC)) return;
+    try {
+      const { path, removed } = await runBackup(db, BACKUP_DIR, now, BACKUP_KEEP);
+      console.log(`Database backed up to ${path}${removed.length ? ` (rotated out ${removed.length})` : ''}`);
+    } catch (error) { console.error('Backup failed:', error); }
+  }, 60 * 60_000).unref();
+}
 
 function shutdown() {
   db.flushAll();

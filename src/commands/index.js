@@ -8,6 +8,7 @@ import { handleServer } from './server.js';
 import { handleChanges } from './changes.js';
 import { handleEvent } from './event.js';
 import { handleHealth } from './health.js';
+import { handleBackup } from './backup.js';
 
 /**
  * Slash command definitions and the name → handler table.
@@ -38,6 +39,8 @@ export const commands = [
   // re-checks, because the default can be overridden per-command in Server Settings.
   new SlashCommandBuilder().setName('health').setDescription('Check that tracking, the database and the loops are alive')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('backup').setDescription('Take an on-demand copy of the tracker database')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ].map((command) => command.toJSON());
 
 const HANDLERS = {
@@ -49,6 +52,7 @@ const HANDLERS = {
   changes: handleChanges,
   event: handleEvent,
   health: handleHealth,
+  backup: handleBackup,
 };
 
 export async function handleChatInputCommand(interaction) {
