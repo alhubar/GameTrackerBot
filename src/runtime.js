@@ -13,6 +13,12 @@ import { DATABASE_PATH } from './config.js';
 
 export const db = openDatabase(DATABASE_PATH);
 
+// GuildMessages is non-privileged and carries no message text: it delivers who posted and where,
+// which is all the Scribe badge counts. MessageContent is the privileged one and is deliberately
+// never requested — the bot has no reason to see what anybody wrote.
 export const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildPresences],
+  intents: [
+    GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildMessages,
+  ],
 });

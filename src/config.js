@@ -65,6 +65,11 @@ if (!Number.isFinite(RECAP_MIN_HOURS) || RECAP_MIN_HOURS < 0) {
 }
 export const RECAP_MIN_SECONDS = Math.round(RECAP_MIN_HOURS * 3600);
 
+// Social badges: the weekly awards for members who turn up to talk rather than play. False stops
+// both new event handlers being registered at all, so nothing is recorded and no badge is awarded.
+// Existing rows are left alone — turning it back on resumes where it left off.
+export const SOCIAL_ENABLED = process.env.SOCIAL_ENABLED?.trim().toLowerCase() !== 'false';
+
 // Anti-idle tracking. Discord flips a member to "idle" after roughly ten minutes without input but
 // keeps reporting whatever game is still open, so a launcher left running overnight would otherwise
 // bank a full night of playtime and outrank everyone who actually played.

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { socialDayKey, epochMinute, windowDays, SOCIAL_METRICS } from './social.js';
 
 export function openDatabase(filename = 'data/tracker.sqlite') {
   mkdirSync(dirname(filename), { recursive: true });
@@ -127,6 +128,25 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_stat_adjustments_guild_user ON stat_adjustments (guild_id, user_id, created_at);
+    -- Social activity, bucketed by UTC day rather than recorded per event. A row per message would
+    -- be far more rows for no extra answer, and a row per voice join/leave would be a searchable
+    -- log of who was in a room with whom, hour by hour — more sensitive than anything else here,
+    -- and nothing the weekly window needs.
+    --
+    -- last_text_minute is an epoch-minute, and exists only to make the text write idempotent
+    -- within its minute: ten messages in one minute is one minute. It is scoped to the day row, so
+    -- a message at 23:59 and one at 00:00 land on different rows and both count.
+    CREATE TABLE IF NOT EXISTS social_days (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      day TEXT NOT NULL,
+      text_minutes INTEGER NOT NULL DEFAULT 0,
+      voice_minutes INTEGER NOT NULL DEFAULT 0,
+      last_text_minute INTEGER,
+      PRIMARY KEY (guild_id, user_id, day)
+    );
+    -- Rankings scan a day range across the whole guild, which the primary key cannot serve.
+    CREATE INDEX IF NOT EXISTS idx_social_days_guild_day ON social_days (guild_id, day);
   `);
   const activeSessionColumns = db.prepare('PRAGMA table_info(active_sessions)').all();
   if (!activeSessionColumns.some((column) => column.name === 'last_checkpoint_at')) {
@@ -144,6 +164,12 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   }
   if (!guildSettingsColumns.some((column) => column.name === 'last_monthly_recap')) {
     db.exec('ALTER TABLE guild_settings ADD COLUMN last_monthly_recap TEXT');
+  }
+  // When social tracking first ran for this guild. Absence of social_days rows is not evidence of
+  // silence — without a floor to measure from, a member who joined yesterday is indistinguishable
+  // from one who has never said a word, and both would be handed the same title.
+  if (!guildSettingsColumns.some((column) => column.name === 'social_tracking_started_at')) {
+    db.exec('ALTER TABLE guild_settings ADD COLUMN social_tracking_started_at INTEGER');
   }
   const eventColumns = db.prepare('PRAGMA table_info(events)').all();
   if (!eventColumns.some((column) => column.name === 'message_id')) {
@@ -240,6 +266,49 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   const getOptOutStmt = db.prepare('SELECT opted_out_at FROM tracking_optouts WHERE guild_id = ? AND user_id = ?');
   const setOptedOutStmt = db.prepare('INSERT OR IGNORE INTO tracking_optouts (guild_id, user_id, opted_out_at) VALUES (?, ?, ?)');
   const clearOptedOutStmt = db.prepare('DELETE FROM tracking_optouts WHERE guild_id = ? AND user_id = ?');
+
+  // Social day buckets. The text write is a conditional upsert: the WHERE on DO UPDATE makes a
+  // second message in the same minute change nothing, so `.changes` is the answer to "did this
+  // message buy a new minute?" without a separate read.
+  const recordTextMinuteStmt = db.prepare(`
+    INSERT INTO social_days (guild_id, user_id, day, text_minutes, last_text_minute) VALUES (?, ?, ?, 1, ?)
+    ON CONFLICT(guild_id, user_id, day) DO UPDATE SET
+      text_minutes = text_minutes + 1, last_text_minute = excluded.last_text_minute
+    WHERE last_text_minute IS NULL OR last_text_minute <> excluded.last_text_minute
+  `);
+  const getSocialDayStmt = db.prepare('SELECT * FROM social_days WHERE guild_id = ? AND user_id = ? AND day = ?');
+  const setVoiceMinutesStmt = db.prepare(`
+    INSERT INTO social_days (guild_id, user_id, day, voice_minutes) VALUES (?, ?, ?, ?)
+    ON CONFLICT(guild_id, user_id, day) DO UPDATE SET voice_minutes = excluded.voice_minutes
+  `);
+  // A member's own totals, deliberately unfiltered: opting out hides you from rankings, it does
+  // not hide your own record from you.
+  const getSocialTotalsStmt = db.prepare(`
+    SELECT COALESCE(SUM(text_minutes), 0) AS text_minutes, COALESCE(SUM(voice_minutes), 0) AS voice_minutes,
+           COUNT(*) AS days
+    FROM social_days WHERE guild_id = ? AND user_id = ? AND day >= ? AND day <= ?
+  `);
+  // One statement per metric rather than an interpolated column name: the metric decides both the
+  // ORDER BY and the HAVING, and building either from a caller-supplied string is how an injection
+  // gets in. Both shapes return both columns, because the recap shows the runner-up's split and
+  // names anyone who topped a second board without being given its badge.
+  const socialLeaderboardStmts = Object.fromEntries(SOCIAL_METRICS.map((metric) => [metric, db.prepare(`
+    SELECT user_id, SUM(text_minutes) AS text_minutes, SUM(voice_minutes) AS voice_minutes
+    FROM social_days
+    WHERE guild_id = ? AND day >= ? AND day <= ? AND ${NOT_OPTED_OUT('social_days')}
+    GROUP BY user_id HAVING SUM(${metric}_minutes) > 0
+    ORDER BY SUM(${metric}_minutes) DESC, user_id ASC LIMIT ?
+  `)]));
+  const getFirstSocialDayStmt = db.prepare(`
+    SELECT MIN(day) AS day FROM social_days
+    WHERE guild_id = ? AND user_id = ? AND (text_minutes > 0 OR voice_minutes > 0)
+  `);
+  const getSocialTrackingStartedAtStmt = db.prepare('SELECT social_tracking_started_at FROM guild_settings WHERE guild_id = ?');
+  const setSocialTrackingStartedAtStmt = db.prepare(`
+    INSERT INTO guild_settings (guild_id, social_tracking_started_at) VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET social_tracking_started_at =
+      COALESCE(guild_settings.social_tracking_started_at, excluded.social_tracking_started_at)
+  `);
 
   const getNotificationChannel = db.prepare('SELECT notification_channel_id FROM guild_settings WHERE guild_id = ?');
   const setNotificationChannel = db.prepare(`
@@ -817,6 +886,73 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       return { session: row, appliedSeconds: applied, totalBefore, totalAfter, gameAfter };
     }),
 
+    // ---- Social minutes ----------------------------------------------------------------------
+
+    /**
+     * Marks the minute containing `now` as text-active. Returns true when this bought a new
+     * minute, false when an earlier message in the same minute already did — so ten messages in
+     * one minute is one minute, and the caller needs no read of its own to know which happened.
+     */
+    recordTextMinute: (guildId, userId, now = Date.now()) =>
+      recordTextMinuteStmt.run(guildId, userId, socialDayKey(now), epochMinute(now)).changes === 1,
+
+    /**
+     * Credits qualifying voice minutes to the day containing `now`, clamped to `dailyCapMinutes`,
+     * and returns how many actually landed — less than asked for once the cap is reached, zero
+     * once it is met. Callers should log the applied figure rather than the requested one.
+     *
+     * Read-clamp-write in one transaction, the same shape the manual corrections use, rather than
+     * a clever single statement: the cap has to be applied to the day's running total, not to this
+     * one credit. The cap bounds the damage from two members idling together in a channel, which
+     * the qualification gate cannot see; it is not a correctness mechanism.
+     */
+    creditVoiceMinutes: db.transaction((guildId, userId, minutes, dailyCapMinutes = Infinity, now = Date.now()) => {
+      if (!(minutes > 0)) return 0;
+      const day = socialDayKey(now);
+      const before = getSocialDayStmt.get(guildId, userId, day)?.voice_minutes ?? 0;
+      const after = Math.min(before + minutes, dailyCapMinutes);
+      if (after <= before) return 0;
+      setVoiceMinutesStmt.run(guildId, userId, day, after);
+      return after - before;
+    }),
+
+    /** One member's own totals over a window. Unfiltered — their record is theirs to see. */
+    getSocialTotals(guildId, userId, fromMs, toMs) {
+      const { fromDay, toDay } = windowDays(fromMs, toMs);
+      return getSocialTotalsStmt.get(guildId, userId, fromDay, toDay);
+    },
+
+    /**
+     * Ranked candidates for one badge over a window, opted-out members hidden.
+     *
+     * Deliberately returns candidates rather than a winner, and applies no minimum: the award pass
+     * walks this list applying the floor and the one-badge-per-member rule together. Splitting
+     * those rules between SQL and JS is how a crown ends up handed to someone who should have been
+     * skipped. Over-fetch, as the existing leaderboards do, so pass-down has somewhere to go.
+     */
+    getSocialLeaderboard(guildId, fromMs, toMs, metric, limit) {
+      const statement = socialLeaderboardStmts[metric];
+      if (!statement) throw new Error(`Unknown social metric "${metric}" — expected ${SOCIAL_METRICS.join(' or ')}.`);
+      const { fromDay, toDay } = windowDays(fromMs, toMs);
+      return statement.all(guildId, fromDay, toDay, limit);
+    },
+
+    /** The first day this member was active at all, or null if they never have been. */
+    getFirstSocialDay: (guildId, userId) => getFirstSocialDayStmt.get(guildId, userId)?.day ?? null,
+
+    getSocialTrackingStartedAt: (guildId) =>
+      getSocialTrackingStartedAtStmt.get(guildId)?.social_tracking_started_at ?? null,
+
+    /**
+     * Records when social tracking first ran for this guild, if it has not been recorded already.
+     * The first call wins: moving the floor later would reset everyone's silence to zero and hand
+     * out fresh titles on every restart.
+     */
+    markSocialTrackingStarted(guildId, now = Date.now()) {
+      setSocialTrackingStartedAtStmt.run(guildId, now);
+      return this.getSocialTrackingStartedAt(guildId);
+    },
+
     // ---- Opt-out and erasure -----------------------------------------------------------------
 
     isOptedOut: (guildId, userId) => !!isOptedOutStmt.get(guildId, userId),
@@ -873,6 +1009,9 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       run('achievements', 'DELETE FROM achievements_unlocked WHERE guild_id = ? AND user_id = ?');
       run('stats', 'DELETE FROM member_stats WHERE guild_id = ? AND user_id = ?');
       run('corrections', 'DELETE FROM stat_adjustments WHERE guild_id = ? AND user_id = ?');
+      // Nothing in a social day row documents anyone else's action, so it is a plain delete —
+      // no anonymising, and no pair-table side effect on another member's count.
+      run('socialDays', 'DELETE FROM social_days WHERE guild_id = ? AND user_id = ?');
       removed.duoDays = db.prepare(
         'DELETE FROM duo_days WHERE guild_id = ? AND (user_id_a = ? OR user_id_b = ?)',
       ).run(guildId, userId, userId).changes;

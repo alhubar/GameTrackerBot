@@ -2,11 +2,12 @@ import { Events } from 'discord.js';
 import { db, client } from './runtime.js';
 import {
   DISCORD_TOKEN, GUILD_ID, MAX_SESSION_MS, RECAP_ENABLED, EVENT_REMINDER_STAGES_MINUTES,
-  BACKUP_ENABLED, BACKUP_DIR, BACKUP_KEEP, BACKUP_HOUR_UTC,
+  BACKUP_ENABLED, BACKUP_DIR, BACKUP_KEEP, BACKUP_HOUR_UTC, SOCIAL_ENABLED,
 } from './config.js';
 import { commands } from './commands/index.js';
 import { handleInteraction } from './interactions/index.js';
 import { updateActivity, reconcileRank, trackerState } from './tracking.js';
+import { recordMessage } from './socialTracking.js';
 import { announceAchievements, announceRecap, checkServerAchievements } from './announce.js';
 import { rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
@@ -23,6 +24,10 @@ import { isBackupDue, runBackup } from './backup.js';
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   for (const guild of readyClient.guilds.cache.values()) {
+    // The floor every "has said nothing" judgement is measured from. Recorded before the GUILD_ID
+    // filter because messages are recorded for every guild the bot is in, and the first call for a
+    // guild wins — moving it on a later start would reset everyone's silence to zero.
+    if (SOCIAL_ENABLED) db.markSocialTrackingStarted(guild.id);
     const scope = GUILD_ID ? (guild.id === GUILD_ID ? guild : null) : guild;
     if (!scope) continue;
     await scope.commands.set(commands);
@@ -40,6 +45,17 @@ client.on(Events.PresenceUpdate, async (_oldPresence, newPresence) => {
     if (member) await updateActivity(member, newPresence);
   } catch (error) { console.error('Could not update activity:', error); }
 });
+
+// Text minutes for the Scribe badge. Registered only when the feature is on, so a disabled server
+// never even receives the events. recordMessage decides what counts and checks the opt-out; a
+// second message inside the same minute is deliberately worth nothing.
+if (SOCIAL_ENABLED) {
+  client.on(Events.MessageCreate, (message) => {
+    try {
+      recordMessage(db, message);
+    } catch (error) { console.error('Could not record a message:', error); }
+  });
+}
 
 client.on(Events.InteractionCreate, handleInteraction);
 
