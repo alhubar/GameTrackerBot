@@ -16,7 +16,7 @@ import {
 import { buildRecap, isRecapDue, markRecapAnnounced } from './recap.js';
 import { awardSocialBadges } from './socialBadges.js';
 import {
-  awardWinnerRole, clearWinnerRole, awardBadgeRole, clearBadgeRole, syncBadgeRoleMembers,
+  awardWinnerRole, clearWinnerRole, awardBadgeRole, clearBadgeRole, syncBadgeRoleMembers, ensureMembersCached,
   BARD_ROLE_COLOR, SCRIBE_ROLE_COLOR, CAVE_DWELLER_ROLE_COLOR,
 } from './roles.js';
 import { eligibleForSilence } from './social.js';
@@ -163,7 +163,7 @@ async function settleCaveDwellers(guild, range) {
   if (!SOCIAL_ENABLED || !CAVE_DWELLER_ENABLED || !CAVE_DWELLER_ROLE) return null;
   const active = new Set(db.getActiveMemberIds(guild.id, range.start, range.end));
   const trackingStartedAt = db.getSocialTrackingStartedAt(guild.id);
-  await guild.members.fetch().catch(() => null);
+  await ensureMembersCached(guild);
 
   const dwellers = [];
   for (const member of guild.members.cache.values()) {

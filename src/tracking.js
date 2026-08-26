@@ -5,7 +5,7 @@ import {
   DEFAULT_ROLE_COLORS, LEVEL_UP_CHANNEL, PAUSE_ON_IDLE,
   SOCIAL_ENABLED, CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE,
 } from './config.js';
-import { removeRankRoles, removeRoleByName } from './roles.js';
+import { removeRankRoles, removeRoleByName, ensureMembersCached } from './roles.js';
 import { findTextChannel } from './ui.js';
 import { RANKS, RANK_HOURS, formatHours, levelUpMessageTemplate, rankForSeconds, roleName } from './ranks.js';
 import {
@@ -35,6 +35,23 @@ export const trackerState = {
 
 export function playingGame(presence) {
   return presence?.activities.find((activity) => activity.type === ActivityType.Playing)?.name ?? null;
+}
+
+/**
+ * Every rank role this guild actually has, matched by saved id **or** by name.
+ *
+ * The saved ids go stale: delete a rank role in Discord and recreate it and the id changes, while
+ * `rank_roles` still points at the old one. The add path below already falls back to matching by
+ * name for exactly that reason — the removal path did not, so a member whose role had been
+ * recreated could rank up and quietly end up wearing two ranks at once, and the Cave Dweller strip
+ * silently did nothing at all. Both now resolve the same way.
+ */
+function rankRoleIds(guild) {
+  const saved = new Set(db.getRankRoles(guild.id).map((entry) => entry.role_id));
+  const names = new Set(RANKS.map((rank) => roleName(rank)));
+  return guild.roles.cache
+    .filter((role) => saved.has(role.id) || names.has(role.name))
+    .map((role) => role.id);
 }
 
 /** Whether this member is currently wearing the Cave Dweller badge. */
@@ -70,14 +87,13 @@ export async function syncRank(member) {
   // the foot of the member list. Nothing is lost: hours and rank live in the database, and the
   // role is rebuilt the moment they do anything.
   if (isCaveDweller(member)) {
-    await removeRankRoles(member, db.getRankRoles(member.guild.id).map((entry) => entry.role_id),
-      `Wearing ${CAVE_DWELLER_ROLE}`);
+    await removeRankRoles(member, rankRoleIds(member.guild), `Wearing ${CAVE_DWELLER_ROLE}`);
     return false;
   }
   const total = db.getTotalSeconds(member.guild.id, member.id);
   const rankIndex = rankForSeconds(total);
   const rankRoles = db.getRankRoles(member.guild.id);
-  const trackedRoleIds = new Set(rankRoles.map((entry) => entry.role_id));
+  const trackedRoleIds = new Set(rankRoleIds(member.guild));
   const targetId = rankRoles.find((entry) => entry.rank_index === rankIndex)?.role_id;
   const target = targetId ? member.guild.roles.cache.get(targetId) : (rankIndex >= 0 ? member.guild.roles.cache.find((role) => role.name === roleName(RANKS[rankIndex])) : null);
   const roles = member.guild.roles.cache.filter((role) => trackedRoleIds.has(role.id));
@@ -199,7 +215,7 @@ export async function setupRoles(guild) {
 }
 
 export async function syncGuildRanks(guild) {
-  await guild.members.fetch();
+  await ensureMembersCached(guild);
   for (const member of guild.members.cache.values()) {
     await syncRank(member).catch((error) => console.error(`Could not sync rank for ${memberRef(member.id)}:`, error));
   }

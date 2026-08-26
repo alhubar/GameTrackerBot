@@ -11,6 +11,7 @@ import {
   updateActivity, reconcileRank, trackerState, noteSociallyActive, syncGuildRanks,
 } from './tracking.js';
 import { recordMessage, shouldRecordMessage, settleRoom, settleAllRooms } from './socialTracking.js';
+import { ensureMembersCached } from './roles.js';
 import { announceAchievements, announceRecap, checkServerAchievements } from './announce.js';
 import { rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
@@ -35,7 +36,7 @@ client.once(Events.ClientReady, async (readyClient) => {
       // Voice states arrive with the guild, but `channel.members` reads the member cache, so warm
       // it once before trusting occupancy. Rows from a previous run were dropped when the database
       // opened; this puts back everyone who is genuinely in a call right now.
-      await guild.members.fetch().catch(() => null);
+      await ensureMembersCached(guild);
       for (const channel of guild.channels.cache.values()) {
         if (channel.isVoiceBased?.() && channel.members?.size) {
           settleRoom(db, guild, channel.id, Date.now(), SOCIAL_VOICE_DAILY_CAP_MINUTES);

@@ -47,7 +47,7 @@ export const CAVE_DWELLER_ROLE_COLOR = 0x5A5A5A;
  * burst is enough to be rate limited, and the rate limit then takes the recap down with it. This
  * is the same guard `presentMemberIds` already applies for the same reason.
  */
-async function ensureMembersCached(guild) {
+export async function ensureMembersCached(guild) {
   if (guild.memberCount && guild.members.cache.size >= guild.memberCount) return;
   await guild.members.fetch().catch(() => null);
 }
@@ -132,9 +132,12 @@ async function ensureBadgeRole(guild, {
   //
   // A `bottom` badge is the deliberate opposite: it goes to the very bottom of the list, under
   // every rank. Discord orders the member list's hoisted sections by role position, so the lowest
-  // hoisted role is the lowest section — which is exactly where a badge for having done nothing
-  // belongs. Nothing has to be stripped to achieve it: no rank role in this bot is hoisted, so a
-  // member's section is decided by their badge alone regardless of what else they hold.
+  // hoisted role makes the lowest section — exactly where a badge for having done nothing belongs.
+  //
+  // That only holds if the badge is also the member's *highest* hoisted role. This bot never hoists
+  // a rank role, but a server may hoist them by hand, and then a rank above would decide the
+  // section and hide the badge entirely. syncRank strips the rank for as long as the badge is worn
+  // for that reason; the placement alone is not enough.
   if (isNew) {
     const ceiling = guild.members.me?.roles.highest.position;
     if (placement === 'bottom') {
