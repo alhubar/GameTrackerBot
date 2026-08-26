@@ -11,13 +11,13 @@ import { achievementById } from './achievements.js';
 import { evaluateServerAchievements } from './serverAchievements.js';
 import {
   buildAchievementEmbed, buildServerAchievementEmbed, buildRecapEmbed, buildNoWinnerRecapEmbed,
-  buildSocialBadgesEmbed,
+  buildSocialBadgeEmbeds,
 } from './embeds.js';
 import { buildRecap, isRecapDue, markRecapAnnounced } from './recap.js';
 import { awardSocialBadges } from './socialBadges.js';
 import {
   awardWinnerRole, clearWinnerRole, awardBadgeRole, clearBadgeRole, syncBadgeRoleMembers,
-  removeRoleByName, BARD_ROLE_COLOR, SCRIBE_ROLE_COLOR, CAVE_DWELLER_ROLE_COLOR,
+  BARD_ROLE_COLOR, SCRIBE_ROLE_COLOR, CAVE_DWELLER_ROLE_COLOR,
 } from './roles.js';
 import { eligibleForSilence } from './social.js';
 
@@ -69,23 +69,6 @@ export async function announceServerAchievements(guild, unlockedTiers) {
 export async function checkServerAchievements(guild) {
   const { unlocked } = evaluateServerAchievements(db, guild.id);
   await announceServerAchievements(guild, unlocked);
-}
-
-/**
- * Takes the Cave Dweller badge off a member who has just done something.
- *
- * That badge is a state rather than an award: it stops being true the instant somebody turns up,
- * so it comes off on the spot rather than at the next recap. "You speak and the badge disappears"
- * is feedback; "you speak and it goes next Monday" is not.
- *
- * Called from every activity path — a message, a qualifying voice minute, launching a game — and
- * cheap enough for all of them because `removeRoleByName` makes no API call unless the member
- * actually holds the role, which almost nobody does.
- */
-export function noteSociallyActive(member) {
-  if (!SOCIAL_ENABLED || !CAVE_DWELLER_ENABLED || !CAVE_DWELLER_ROLE || !member) return;
-  removeRoleByName(member, CAVE_DWELLER_ROLE)
-    .catch((error) => console.error('Could not clear the Cave Dweller role:', error));
 }
 
 /**
@@ -151,7 +134,7 @@ async function settleSocialBadges(guild, recap, championId) {
     if (member) displayNames.set(userId, member.displayName);
   }
 
-  return buildSocialBadgesEmbed(awards, {
+  return buildSocialBadgeEmbeds(awards, {
     displayNames,
     range,
     bardRoleName: BARD_ROLE || null,
@@ -230,10 +213,10 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
 
   // One post for the whole period. The badges are settled first so that whichever branch below
   // runs, its message carries the same companion card.
-  const socialEmbed = await settleSocialBadges(guild, recap, recap.winner?.userId ?? null)
+  const socialEmbeds = await settleSocialBadges(guild, recap, recap.winner?.userId ?? null)
     .catch((error) => {
       console.error('Could not settle the social badges:', error);
-      return null;
+      return [];
     });
 
   if (!recap.winner) {
@@ -246,7 +229,7 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
         botAvatarUrl: client.user?.displayAvatarURL() ?? null,
         roleName: RECAP_WINNER_ROLE || null,
       });
-      await channel.send({ embeds: [embed, socialEmbed].filter(Boolean) })
+      await channel.send({ embeds: [embed, ...(socialEmbeds ?? [])] })
         .catch((error) => console.error('Could not post the recap:', error));
     }
     markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
@@ -271,7 +254,7 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
       avatarUrl: winnerMember?.displayAvatarURL() ?? null,
       roleName: role?.name ?? null,
     });
-    await channel.send({ content: `<@${recap.winner.userId}>`, embeds: [embed, socialEmbed].filter(Boolean) })
+    await channel.send({ content: `<@${recap.winner.userId}>`, embeds: [embed, ...(socialEmbeds ?? [])] })
       .catch((error) => console.error('Could not post the recap:', error));
   }
   markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);

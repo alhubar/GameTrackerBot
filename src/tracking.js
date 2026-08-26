@@ -1,13 +1,17 @@
 import { ActivityType } from 'discord.js';
 import { db } from './runtime.js';
 import { memberRef } from './log.js';
-import { DEFAULT_ROLE_COLORS, LEVEL_UP_CHANNEL, PAUSE_ON_IDLE } from './config.js';
+import {
+  DEFAULT_ROLE_COLORS, LEVEL_UP_CHANNEL, PAUSE_ON_IDLE,
+  SOCIAL_ENABLED, CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE,
+} from './config.js';
+import { removeRankRoles, removeRoleByName } from './roles.js';
 import { findTextChannel } from './ui.js';
 import { RANKS, RANK_HOURS, formatHours, levelUpMessageTemplate, rankForSeconds, roleName } from './ranks.js';
 import {
   evaluateSessionStart, evaluateSessionEnd, evaluateSocialTiers, evaluateDuoDays,
 } from './achievements.js';
-import { announceAchievements, checkServerAchievements, noteSociallyActive } from './announce.js';
+import { announceAchievements, checkServerAchievements } from './announce.js';
 
 /**
  * Presence in, sessions and roles out — the heart of the bot.
@@ -33,8 +37,43 @@ export function playingGame(presence) {
   return presence?.activities.find((activity) => activity.type === ActivityType.Playing)?.name ?? null;
 }
 
+/** Whether this member is currently wearing the Cave Dweller badge. */
+function isCaveDweller(member) {
+  if (!CAVE_DWELLER_ENABLED || !CAVE_DWELLER_ROLE) return false;
+  return member.roles.cache.some((role) => role.name === CAVE_DWELLER_ROLE);
+}
+
+/**
+ * Takes the Cave Dweller badge off a member who has just done something, and gives them their rank
+ * back in the same breath.
+ *
+ * The badge is a state rather than an award: it stops being true the instant somebody turns up, so
+ * it comes off on the spot rather than at the next recap. Restoring the rank here rather than
+ * waiting for the next presence update matters — a member who only typed a message might not
+ * produce one for hours, and would be left with no rank role in the meantime.
+ *
+ * Cheap enough to call on every message: `removeRoleByName` makes no API call unless the member
+ * actually holds the badge, and `syncRank` is skipped entirely in that overwhelmingly common case.
+ */
+export async function noteSociallyActive(member) {
+  if (!SOCIAL_ENABLED || !CAVE_DWELLER_ENABLED || !CAVE_DWELLER_ROLE || !member) return;
+  const had = await removeRoleByName(member, CAVE_DWELLER_ROLE);
+  if (had) await syncRank(member).catch(console.error);
+}
+
 export async function syncRank(member) {
   if (member.user.bot) return;
+  // A Cave Dweller wears no rank while they hold the badge. On a server that hoists its rank roles
+  // — which this bot never does, but plenty of servers do by hand — a hoisted rank sitting above
+  // the badge would decide the member's section and hide it completely. Removing the rank is the
+  // only way the badge can be their lowest *and* highest hoisted role, which is what puts them at
+  // the foot of the member list. Nothing is lost: hours and rank live in the database, and the
+  // role is rebuilt the moment they do anything.
+  if (isCaveDweller(member)) {
+    await removeRankRoles(member, db.getRankRoles(member.guild.id).map((entry) => entry.role_id),
+      `Wearing ${CAVE_DWELLER_ROLE}`);
+    return false;
+  }
   const total = db.getTotalSeconds(member.guild.id, member.id);
   const rankIndex = rankForSeconds(total);
   const rankRoles = db.getRankRoles(member.guild.id);

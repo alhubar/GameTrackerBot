@@ -3,15 +3,15 @@ import { db, client } from './runtime.js';
 import {
   DISCORD_TOKEN, GUILD_ID, MAX_SESSION_MS, RECAP_ENABLED, EVENT_REMINDER_STAGES_MINUTES,
   BACKUP_ENABLED, BACKUP_DIR, BACKUP_KEEP, BACKUP_HOUR_UTC, SOCIAL_ENABLED,
-  SOCIAL_VOICE_DAILY_CAP_MINUTES,
+  SOCIAL_VOICE_DAILY_CAP_MINUTES, CAVE_DWELLER_ENABLED,
 } from './config.js';
 import { commands } from './commands/index.js';
 import { handleInteraction } from './interactions/index.js';
-import { updateActivity, reconcileRank, trackerState } from './tracking.js';
-import { recordMessage, shouldRecordMessage, settleRoom, settleAllRooms } from './socialTracking.js';
 import {
-  announceAchievements, announceRecap, checkServerAchievements, noteSociallyActive,
-} from './announce.js';
+  updateActivity, reconcileRank, trackerState, noteSociallyActive, syncGuildRanks,
+} from './tracking.js';
+import { recordMessage, shouldRecordMessage, settleRoom, settleAllRooms } from './socialTracking.js';
+import { announceAchievements, announceRecap, checkServerAchievements } from './announce.js';
 import { rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
 import { collectDueReminders } from './events.js';
@@ -138,7 +138,16 @@ setInterval(async () => {
 if (RECAP_ENABLED) {
   setInterval(async () => {
     for (const guild of client.guilds.cache.values()) {
-      await announceRecap(guild).catch((error) => console.error('Recap failed:', error));
+      const recap = await announceRecap(guild).catch((error) => {
+        console.error('Recap failed:', error);
+        return null;
+      });
+      // A recap hands the Cave Dweller badge around, and a Cave Dweller wears no rank while they
+      // hold one. One sweep here brings every rank back in line with the badges immediately,
+      // instead of each member waiting for their own next presence event to put theirs right.
+      if (recap && SOCIAL_ENABLED && CAVE_DWELLER_ENABLED) {
+        await syncGuildRanks(guild).catch((error) => console.error('Rank sweep failed:', error));
+      }
     }
   }, 60 * 60_000).unref();
 }

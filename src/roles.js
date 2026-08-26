@@ -196,6 +196,22 @@ export async function syncBadgeRoleMembers(guild, userIds, options = {}) {
 }
 
 /**
+ * Strips every rank role from one member.
+ *
+ * Takes the ids rather than reading them, so this stays a pure Discord operation that both
+ * tracking.js and announce.js can call — the two already point at each other, and giving either
+ * one a reason to import the other would close the loop.
+ */
+export async function removeRankRoles(member, rankRoleIds, reason) {
+  const tracked = new Set(rankRoleIds);
+  const held = member.roles.cache.filter((role) => tracked.has(role.id));
+  if (!held.size) return false;
+  await member.roles.remove(held, reason).catch((error) =>
+    console.error(`Could not take the rank role from ${memberRef(member.id)}:`, error));
+  return true;
+}
+
+/**
  * Takes one named role off one member, if they have it. A no-op — and crucially no API call — when
  * they do not, which is what makes it cheap enough to call on every single message.
  */
