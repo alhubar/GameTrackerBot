@@ -147,6 +147,22 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     );
     -- Rankings scan a day range across the whole guild, which the primary key cannot serve.
     CREATE INDEX IF NOT EXISTS idx_social_days_guild_day ON social_days (guild_id, day);
+    -- Who is in voice right now, mirroring active_sessions. Unlike a game session this is not
+    -- self-contained: whether the clock runs depends on who else is in the room, so qualified
+    -- is a cache of the room's state at the last settle, not a property of the member.
+    --
+    -- last_checkpoint_at carries the sub-minute remainder. Banking advances it by whole minutes
+    -- only, so the seconds left over stay owed instead of being truncated away on every settle —
+    -- and a busy room settles on every join, leave and mute, which would otherwise bleed minutes.
+    CREATE TABLE IF NOT EXISTS active_voice (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      qualified INTEGER NOT NULL DEFAULT 0,
+      last_checkpoint_at INTEGER NOT NULL,
+      PRIMARY KEY (guild_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_active_voice_channel ON active_voice (guild_id, channel_id);
   `);
   const activeSessionColumns = db.prepare('PRAGMA table_info(active_sessions)').all();
   if (!activeSessionColumns.some((column) => column.name === 'last_checkpoint_at')) {
@@ -303,6 +319,21 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     SELECT MIN(day) AS day FROM social_days
     WHERE guild_id = ? AND user_id = ? AND (text_minutes > 0 OR voice_minutes > 0)
   `);
+  const getVoiceRowStmt = db.prepare('SELECT * FROM active_voice WHERE guild_id = ? AND user_id = ?');
+  const getVoiceRowsForChannelStmt = db.prepare('SELECT * FROM active_voice WHERE guild_id = ? AND channel_id = ?');
+  const getAllVoiceRowsStmt = db.prepare('SELECT * FROM active_voice');
+  const upsertVoiceRowStmt = db.prepare(`
+    INSERT INTO active_voice (guild_id, user_id, channel_id, qualified, last_checkpoint_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+      channel_id = excluded.channel_id, qualified = excluded.qualified,
+      last_checkpoint_at = excluded.last_checkpoint_at
+  `);
+  const deleteVoiceRowStmt = db.prepare('DELETE FROM active_voice WHERE guild_id = ? AND user_id = ?');
+  // Deliberately leaves last_checkpoint_at alone: an existing row is carrying owed seconds, and
+  // rewriting the timestamp here would throw them away every time somebody toggled their mic.
+  const setVoiceQualifiedStmt = db.prepare('UPDATE active_voice SET channel_id = ?, qualified = ? WHERE guild_id = ? AND user_id = ?');
+  const advanceVoiceCheckpointStmt = db.prepare('UPDATE active_voice SET last_checkpoint_at = ? WHERE guild_id = ? AND user_id = ?');
+
   const getSocialTrackingStartedAtStmt = db.prepare('SELECT social_tracking_started_at FROM guild_settings WHERE guild_id = ?');
   const setSocialTrackingStartedAtStmt = db.prepare(`
     INSERT INTO guild_settings (guild_id, social_tracking_started_at) VALUES (?, ?)
@@ -628,9 +659,62 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     return stale.length;
   }
 
+  /**
+   * Adds voice minutes to a day bucket, clamped to the daily cap. Returns what actually landed.
+   * Not exported directly — `bankVoiceTime` owns the only correct way to call it, since the amount
+   * always has to come from a row's elapsed time rather than from a caller's arithmetic.
+   */
+  function creditVoice(guildId, userId, minutes, dailyCapMinutes = Infinity, now = Date.now()) {
+    if (!(minutes > 0)) return 0;
+    const day = socialDayKey(now);
+    const before = getSocialDayStmt.get(guildId, userId, day)?.voice_minutes ?? 0;
+    const after = Math.min(before + minutes, dailyCapMinutes);
+    if (after <= before) return 0;
+    setVoiceMinutesStmt.run(guildId, userId, day, after);
+    return after - before;
+  }
+
+  /**
+   * Banks whatever this member's voice row owes, and returns the minutes credited.
+   *
+   * Three behaviours worth keeping straight:
+   * - **Not qualified**: nothing is owed, and the clock restarts at `now`. Without that reset, the
+   *   stretch spent muted or alone would be credited retroactively the moment they qualify again.
+   * - **Qualified**: only whole minutes are banked, and the checkpoint advances by exactly those
+   *   minutes rather than to `now`, so the leftover seconds stay owed. A busy room settles on every
+   *   join, leave and mute; truncating each time would quietly bleed minutes out of active calls.
+   * - **Capped out**: the checkpoint still advances. Holding the time back instead would let a
+   *   capped member accumulate an unbounded owed span and dump all of it into the next day.
+   *
+   * Time is credited to the day containing `now`. The checkpoint loop bounds any single span to a
+   * minute, so at most a minute of a call spanning midnight lands on the wrong side of it.
+   */
+  const bankVoiceTime = db.transaction((guildId, userId, now = Date.now(), dailyCapMinutes = Infinity) => {
+    const row = getVoiceRowStmt.get(guildId, userId);
+    if (!row) return 0;
+    if (!row.qualified) {
+      advanceVoiceCheckpointStmt.run(now, guildId, userId);
+      return 0;
+    }
+    const minutes = Math.floor(Math.max(0, now - row.last_checkpoint_at) / 60_000);
+    if (minutes <= 0) return 0;
+    const credited = creditVoice(guildId, userId, minutes, dailyCapMinutes, now);
+    advanceVoiceCheckpointStmt.run(row.last_checkpoint_at + minutes * 60_000, guildId, userId);
+    return credited;
+  });
+
   const recoveredSessions = recoverStaleSessions();
   if (recoveredSessions) {
     console.log(`Recovered ${recoveredSessions} session(s) left open by a previous unclean shutdown.`);
+  }
+
+  // Voice rows left by an unclean exit are dropped rather than closed. Whole minutes were already
+  // banked at the last checkpoint, what is left is the sub-minute remainder, and the bot has no
+  // idea whether anyone stayed in the channel while it was down. Anyone still in voice is picked
+  // up again when occupancy is read on ready.
+  const staleVoiceRows = db.prepare('DELETE FROM active_voice').run().changes;
+  if (staleVoiceRows) {
+    console.log(`Dropped ${staleVoiceRows} voice row(s) left by a previous unclean shutdown.`);
   }
 
   return {
@@ -897,23 +981,53 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       recordTextMinuteStmt.run(guildId, userId, socialDayKey(now), epochMinute(now)).changes === 1,
 
     /**
-     * Credits qualifying voice minutes to the day containing `now`, clamped to `dailyCapMinutes`,
-     * and returns how many actually landed — less than asked for once the cap is reached, zero
-     * once it is met. Callers should log the applied figure rather than the requested one.
+     * Credits voice minutes to the day containing `now`, clamped to `dailyCapMinutes`, returning
+     * how many actually landed — fewer than asked for once the cap is reached, zero once it is met.
      *
      * Read-clamp-write in one transaction, the same shape the manual corrections use, rather than
-     * a clever single statement: the cap has to be applied to the day's running total, not to this
-     * one credit. The cap bounds the damage from two members idling together in a channel, which
-     * the qualification gate cannot see; it is not a correctness mechanism.
+     * a clever single statement: the cap applies to the day's running total, not to this one
+     * credit. The cap bounds the damage from two members idling together in a channel, which the
+     * qualification gate cannot see; it is not a correctness mechanism.
+     *
+     * Prefer `bankVoiceTime` — it derives the amount from a real elapsed span instead of trusting
+     * a caller's arithmetic. This is exposed for tests and for seeding.
      */
-    creditVoiceMinutes: db.transaction((guildId, userId, minutes, dailyCapMinutes = Infinity, now = Date.now()) => {
-      if (!(minutes > 0)) return 0;
-      const day = socialDayKey(now);
-      const before = getSocialDayStmt.get(guildId, userId, day)?.voice_minutes ?? 0;
-      const after = Math.min(before + minutes, dailyCapMinutes);
-      if (after <= before) return 0;
-      setVoiceMinutesStmt.run(guildId, userId, day, after);
-      return after - before;
+    creditVoiceMinutes: db.transaction(creditVoice),
+
+    // ---- Voice presence ----------------------------------------------------------------------
+
+    getVoiceRow: (guildId, userId) => getVoiceRowStmt.get(guildId, userId) ?? null,
+    getVoiceRowsForChannel: (guildId, channelId) => getVoiceRowsForChannelStmt.all(guildId, channelId),
+    getAllVoiceRows: () => getAllVoiceRowsStmt.all(),
+
+    /**
+     * Records where a member is and whether their clock should be running.
+     *
+     * A member already on record keeps their `last_checkpoint_at`, because it is carrying the
+     * seconds they are still owed; only a genuinely new arrival starts the clock at `now`.
+     */
+    setVoiceState: db.transaction((guildId, userId, channelId, qualified, now = Date.now()) => {
+      const flag = qualified ? 1 : 0;
+      if (getVoiceRowStmt.get(guildId, userId)) setVoiceQualifiedStmt.run(channelId, flag, guildId, userId);
+      else upsertVoiceRowStmt.run(guildId, userId, channelId, flag, now);
+    }),
+
+    clearVoiceRow: (guildId, userId) => deleteVoiceRowStmt.run(guildId, userId).changes === 1,
+
+    bankVoiceTime,
+
+    /**
+     * Banks everything owed and empties the table, for a clean shutdown. The mirror of what
+     * `flushAll` does for game sessions: stopping deliberately should not cost anyone their
+     * minutes, and every row is settled as of this moment because the bot knows it is stopping now.
+     */
+    flushVoice: db.transaction((now = Date.now(), dailyCapMinutes = Infinity) => {
+      let credited = 0;
+      for (const row of getAllVoiceRowsStmt.all()) {
+        credited += bankVoiceTime(row.guild_id, row.user_id, now, dailyCapMinutes);
+        deleteVoiceRowStmt.run(row.guild_id, row.user_id);
+      }
+      return credited;
     }),
 
     /** One member's own totals over a window. Unfiltered — their record is theirs to see. */
@@ -960,6 +1074,11 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     /** Also closes any session in flight, so the minutes since the last checkpoint are not banked later. */
     optOut: db.transaction((guildId, userId, now = Date.now()) => {
       const closed = closeSession(guildId, userId, now);
+      // The voice row goes the same way and for the same reason: left in place, the next settle
+      // would credit minutes accrued after the member had already asked to stop being recorded.
+      // What is dropped with it is the sub-minute remainder the row was carrying, exactly as an
+      // unclean exit drops it — whole minutes were banked at the last checkpoint.
+      deleteVoiceRowStmt.run(guildId, userId);
       setOptedOutStmt.run(guildId, userId, now);
       return closed;
     }),
@@ -1012,6 +1131,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       // Nothing in a social day row documents anyone else's action, so it is a plain delete —
       // no anonymising, and no pair-table side effect on another member's count.
       run('socialDays', 'DELETE FROM social_days WHERE guild_id = ? AND user_id = ?');
+      run('activeVoice', 'DELETE FROM active_voice WHERE guild_id = ? AND user_id = ?');
       removed.duoDays = db.prepare(
         'DELETE FROM duo_days WHERE guild_id = ? AND (user_id_a = ? OR user_id_b = ?)',
       ).run(guildId, userId, userId).changes;

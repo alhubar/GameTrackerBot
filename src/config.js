@@ -69,6 +69,14 @@ export const RECAP_MIN_SECONDS = Math.round(RECAP_MIN_HOURS * 3600);
 // both new event handlers being registered at all, so nothing is recorded and no badge is awarded.
 // Existing rows are left alone — turning it back on resumes where it left off.
 export const SOCIAL_ENABLED = process.env.SOCIAL_ENABLED?.trim().toLowerCase() !== 'false';
+// Ceiling on how much voice time one member can bank in a single UTC day. The qualification gate
+// already refuses to count anyone sitting alone, muted or deafened, but it cannot tell two friends
+// talking from two friends who both left the call connected overnight. This bounds that case; it
+// is a blast radius, not a correctness mechanism.
+export const SOCIAL_VOICE_DAILY_CAP_MINUTES = Number(process.env.SOCIAL_VOICE_DAILY_CAP_MINUTES ?? '240');
+if (!Number.isInteger(SOCIAL_VOICE_DAILY_CAP_MINUTES) || SOCIAL_VOICE_DAILY_CAP_MINUTES < 1) {
+  throw new Error(`SOCIAL_VOICE_DAILY_CAP_MINUTES must be a whole number of at least 1 — got "${process.env.SOCIAL_VOICE_DAILY_CAP_MINUTES}".`);
+}
 
 // Anti-idle tracking. Discord flips a member to "idle" after roughly ten minutes without input but
 // keeps reporting whatever game is still open, so a launcher left running overnight would otherwise

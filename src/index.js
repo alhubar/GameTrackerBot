@@ -3,11 +3,12 @@ import { db, client } from './runtime.js';
 import {
   DISCORD_TOKEN, GUILD_ID, MAX_SESSION_MS, RECAP_ENABLED, EVENT_REMINDER_STAGES_MINUTES,
   BACKUP_ENABLED, BACKUP_DIR, BACKUP_KEEP, BACKUP_HOUR_UTC, SOCIAL_ENABLED,
+  SOCIAL_VOICE_DAILY_CAP_MINUTES,
 } from './config.js';
 import { commands } from './commands/index.js';
 import { handleInteraction } from './interactions/index.js';
 import { updateActivity, reconcileRank, trackerState } from './tracking.js';
-import { recordMessage } from './socialTracking.js';
+import { recordMessage, settleRoom, settleAllRooms } from './socialTracking.js';
 import { announceAchievements, announceRecap, checkServerAchievements } from './announce.js';
 import { rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
@@ -27,7 +28,18 @@ client.once(Events.ClientReady, async (readyClient) => {
     // The floor every "has said nothing" judgement is measured from. Recorded before the GUILD_ID
     // filter because messages are recorded for every guild the bot is in, and the first call for a
     // guild wins — moving it on a later start would reset everyone's silence to zero.
-    if (SOCIAL_ENABLED) db.markSocialTrackingStarted(guild.id);
+    if (SOCIAL_ENABLED) {
+      db.markSocialTrackingStarted(guild.id);
+      // Voice states arrive with the guild, but `channel.members` reads the member cache, so warm
+      // it once before trusting occupancy. Rows from a previous run were dropped when the database
+      // opened; this puts back everyone who is genuinely in a call right now.
+      await guild.members.fetch().catch(() => null);
+      for (const channel of guild.channels.cache.values()) {
+        if (channel.isVoiceBased?.() && channel.members?.size) {
+          settleRoom(db, guild, channel.id, Date.now(), SOCIAL_VOICE_DAILY_CAP_MINUTES);
+        }
+      }
+    }
     const scope = GUILD_ID ? (guild.id === GUILD_ID ? guild : null) : guild;
     if (!scope) continue;
     await scope.commands.set(commands);
@@ -57,6 +69,21 @@ if (SOCIAL_ENABLED) {
   });
 }
 
+// Voice minutes for the Bard badge. Both rooms are settled, never just the member who moved:
+// whether a clock runs depends on who else is in the room, so somebody leaving changes whether
+// everyone left behind is still earning — and Discord only tells us about the one who moved.
+if (SOCIAL_ENABLED) {
+  client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    try {
+      const guild = newState.guild ?? oldState.guild;
+      const now = Date.now();
+      for (const channelId of new Set([oldState.channelId, newState.channelId].filter(Boolean))) {
+        settleRoom(db, guild, channelId, now, SOCIAL_VOICE_DAILY_CAP_MINUTES);
+      }
+    } catch (error) { console.error('Could not settle a voice channel:', error); }
+  });
+}
+
 client.on(Events.InteractionCreate, handleInteraction);
 
 // Persist elapsed time and re-evaluate ranks/achievements even if Discord did not send a new presence event.
@@ -82,6 +109,14 @@ setInterval(async () => {
       const unlocked = evaluateSessionEnd(db, guildId, userId, completed, now);
       await announceAchievements(member, unlocked).catch(console.error);
     }
+  }
+  // Voice needs the same treatment as sessions, for a different reason: nobody has to *do*
+  // anything for a room to stop qualifying, so occupancy is re-read from live state here rather
+  // than trusted from the last gateway event. A missed event heals on the next pass.
+  if (SOCIAL_ENABLED) {
+    try {
+      settleAllRooms(db, client, now, SOCIAL_VOICE_DAILY_CAP_MINUTES);
+    } catch (error) { console.error('Could not settle voice channels:', error); }
   }
   // Catch server-wide milestones (e.g. combined playtime) crossed by idle accrual, not just by a presence event.
   for (const guild of client.guilds.cache.values()) {
@@ -167,6 +202,9 @@ if (BACKUP_ENABLED) {
 
 function shutdown() {
   db.flushAll();
+  // Stopping on purpose should not cost anyone the minutes they were part-way through earning,
+  // so every voice row is settled as of now rather than dropped the way a crash drops them.
+  if (SOCIAL_ENABLED) db.flushVoice(Date.now(), SOCIAL_VOICE_DAILY_CAP_MINUTES);
   db.close();
   client.destroy();
   process.exit(0);
