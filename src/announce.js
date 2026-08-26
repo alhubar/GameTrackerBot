@@ -65,10 +65,6 @@ export async function checkServerAchievements(guild) {
 }
 
 /**
- * Posts the last completed period's recap once, on the first check after it ends. The period key is
- * recorded either way, so a quiet week is not retried forever and a restart cannot double-post.
- */
-/**
  * Takes the Cave Dweller badge off a member who has just done something.
  *
  * That badge is a state rather than an award: it stops being true the instant somebody turns up,
@@ -116,7 +112,7 @@ async function settleSocialBadges(guild, recap, championId) {
 
   // An unclaimed badge is stripped rather than left on last period's holder — that is what makes
   // "unclaimed" an outcome the recap can honestly report.
-  const handOver = async (roleName, roleIcon, color, positionFromTop, award) => {
+  const handOver = async (roleName, roleIcon, color, award) => {
     if (!roleName) return;
     if (!award) {
       await clearBadgeRole(guild, roleName)
@@ -124,14 +120,15 @@ async function settleSocialBadges(guild, recap, championId) {
       return;
     }
     await awardBadgeRole(guild, award.user_id, {
-      roleName, roleIcon, color, positionFromTop,
+      roleName, roleIcon, color,
       reason: `${roleName} — social badge`,
       awardReason: `${roleName} — top of the board last ${range.periodNoun}`,
     }).catch((error) => console.error(`Could not award the ${roleName} role:`, error));
   };
-  // Champion of the Realm keeps the top slot; these stack beneath it in a fixed order.
-  await handOver(BARD_ROLE, BARD_ROLE_ICON, BARD_ROLE_COLOR, 2, awards.bard);
-  await handOver(SCRIBE_ROLE, SCRIBE_ROLE_ICON, SCRIBE_ROLE_COLOR, 3, awards.scribe);
+  // Both share the slot directly beneath the bot's role, alongside Champion of the Realm. They
+  // never need to be told apart by position, because nobody ever holds two.
+  await handOver(BARD_ROLE, BARD_ROLE_ICON, BARD_ROLE_COLOR, awards.bard);
+  await handOver(SCRIBE_ROLE, SCRIBE_ROLE_ICON, SCRIBE_ROLE_COLOR, awards.scribe);
 
   const caveDwellers = await settleCaveDwellers(guild, range);
 
@@ -193,7 +190,6 @@ async function settleCaveDwellers(guild, range) {
     roleName: CAVE_DWELLER_ROLE,
     roleIcon: CAVE_DWELLER_ROLE_ICON,
     color: CAVE_DWELLER_ROLE_COLOR,
-    positionFromTop: 4,
     // The only badge that is not hoisted. Hoisting would carve a permanent, public "inactive"
     // section into the member list, which is a considerably harsher object than a coloured name.
     hoist: false,
@@ -204,6 +200,10 @@ async function settleCaveDwellers(guild, range) {
   return dwellers.length;
 }
 
+/**
+ * Posts the last completed period's recap once, on the first check after it ends. The period key is
+ * recorded either way, so a quiet week is not retried forever and a restart cannot double-post.
+ */
 export async function announceRecap(guild, now = Date.now(), { force = false } = {}) {
   if (!force && !isRecapDue(db, guild.id, now, RECAP_PERIOD)) return null;
   const recap = buildRecap(db, guild.id, now, { period: RECAP_PERIOD, minSeconds: RECAP_MIN_SECONDS });

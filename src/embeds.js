@@ -8,7 +8,6 @@ const RECAP_EMPTY_GREY = 0x99AAB5;
 /** The social badges' own card. Deliberately not the gold the playtime recap uses — it sits
  *  directly beneath that card, and matching it would read as one long celebration of one person. */
 const SOCIAL_BADGE_BLUE = 0x5865F2;
-const PODIUM_MEDALS = ['🥇', '🥈', '🥉'];
 
 /** The card posted when a member unlocks a personal achievement. */
 export function buildAchievementEmbed(achievement, { displayName, avatarUrl, percentOfPlayers }) {
@@ -43,7 +42,7 @@ export function buildServerAchievementEmbed(tier, guildIconUrl = null) {
  * names so this stays free of Discord lookups, and `avatarUrl` is the winner's picture.
  */
 export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = null }) {
-  const { winner, range, podium } = recap;
+  const { winner, range } = recap;
   const nameOf = (userId) => displayNames.get(userId) ?? 'Unknown member';
 
   const embed = new EmbedBuilder()
@@ -74,15 +73,9 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
     inline: true,
   });
 
-  if (podium.length > 1) {
-    embed.addFields({
-      name: '📊 Runners-up',
-      value: podium.slice(1)
-        .map((entry, index) => `${PODIUM_MEDALS[index + 1]} ${nameOf(entry.userId)} — ${formatPlayTime(entry.totalSeconds)}`)
-        .join('\n'),
-      inline: false,
-    });
-  }
+  // No runners-up: the card is about the member who won it, and a leaderboard underneath their
+  // name turns a celebration into a scoreboard — /leaderboard is right there for anyone who wants
+  // the standings. buildRecap still returns the podium — the no-winner card names the closest try.
 
   embed.setFooter({
     text: roleName

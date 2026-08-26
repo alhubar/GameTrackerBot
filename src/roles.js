@@ -59,6 +59,24 @@ export async function clearWinnerRole(guild, roleName) {
 export const clearBadgeRole = clearWinnerRole;
 
 /**
+ * The highest position held by another coloured role this badge would lose to.
+ *
+ * Anything coloured sitting above the badge wins the member's name colour, which is the one thing
+ * a badge exists to do — so that is exactly the condition worth naming. Roles above the bot's own
+ * are ignored: nothing can be done about those, and warning about an admin role every period would
+ * only train the reader to skip the message. Bot-managed roles are skipped for the same reason.
+ */
+function colouredRoleAbove(guild, role) {
+  const ceiling = guild.members.me?.roles.highest.position ?? Infinity;
+  const rivals = [...guild.roles.cache.values()].filter((candidate) => candidate.id !== role.id
+    && !candidate.managed
+    && candidate.color !== 0
+    && candidate.position > role.position
+    && candidate.position < ceiling);
+  return rivals.length ? Math.max(...rivals.map((candidate) => candidate.position)) : null;
+}
+
+/**
  * Creates a badge role if it is missing, puts it where its colour will actually show, and gives it
  * its icon. Returns the role, or null if it could not be created.
  *
@@ -66,7 +84,7 @@ export const clearBadgeRole = clearWinnerRole;
  * badge by hand keeps its choice — the same rule the rank roles already follow.
  */
 async function ensureBadgeRole(guild, {
-  roleName, roleIcon = null, color = WINNER_ROLE_COLOR, positionFromTop = 1,
+  roleName, roleIcon = null, color = WINNER_ROLE_COLOR,
   hoist = true, reason = `${roleName} — badge`,
 } = {}) {
   if (!roleName) return null;
@@ -87,12 +105,25 @@ async function ensureBadgeRole(guild, {
   // Discord creates roles at the bottom, where every rank role sits above and overrides the badge.
   // A member's name takes the colour of their highest coloured role, so the badge has to outrank
   // them — put it just beneath the bot's own role, the highest slot it is allowed to use.
+  //
+  // Every badge goes to the *same* slot rather than stacking downwards one below the next. They do
+  // not need separate positions, because the award pass guarantees nobody holds two — and walking
+  // each successive badge one place lower marches them straight into the rank roles, where the
+  // third or fourth ends up beneath a rank and is silently overridden on anyone who holds it.
   if (isNew) {
     const ceiling = guild.members.me?.roles.highest.position;
     if (ceiling && ceiling > 1) {
-      await role.setPosition(Math.max(1, ceiling - positionFromTop), { reason: 'Badge colour must outrank the rank roles' })
+      await role.setPosition(ceiling - 1, { reason: 'Badge colour must outrank the rank roles' })
         .catch((error) => console.error(`Could not raise the ${roleName} role:`, error));
     }
+  }
+  // Badges land under the bot's role, so the bot needs room above the ranks for all of them. When
+  // it does not, they spill below and stop showing — the single most common real-world failure in
+  // this bot, and completely silent. Say so plainly rather than leaving it to be noticed.
+  const rival = colouredRoleAbove(guild, role);
+  if (rival !== null) {
+    console.warn(`The ${roleName} badge is at position ${role.position}, below a rank role at `
+      + `${rival} — its colour will be overridden. Move the bot's own role higher.`);
   }
 
   // A role icon shows beside the name, but Discord only allows it from Boost Level 2. Attempt it
@@ -156,7 +187,6 @@ export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = nu
     roleName,
     roleIcon,
     color: WINNER_ROLE_COLOR,
-    positionFromTop: 1,
     reason: `${roleName} — winner badge`,
     awardReason: `${roleName} — gamer of the month`,
   });
@@ -165,10 +195,10 @@ export async function awardWinnerRole(guild, winnerId, { roleName, roleIcon = nu
 /**
  * The general form: hand one badge role over to one member.
  *
- * `positionFromTop` is how far beneath the bot's own role the badge sits when it is first created,
- * so several badges can stack in a fixed order instead of fighting over the same slot. The order
- * among them is cosmetic — nobody ever holds two, by the award pass's own rule — but Champion of
- * the Realm keeps the top slot because it is the badge the ranks belong to.
+ * Every badge is created into the same slot, directly beneath the bot's own role. They do not need
+ * distinct positions — the award pass guarantees nobody holds two — and their order among
+ * themselves is invisible for exactly that reason. What matters is only that all of them stay
+ * above every rank role, which is what sharing one slot achieves.
  */
 export async function awardBadgeRole(guild, userId, options = {}) {
   const { roleName, awardReason = `${roleName} — awarded` } = options;
