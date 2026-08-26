@@ -1,5 +1,9 @@
 node_modules/
 .env
+# Any other env file too — a second one for a test server holds a second real bot token, and
+# `.env` alone would not have caught `.env.test`. The example file is the one deliberate exception.
+.env.*
+!.env.example
 data/
 npm-debug.log*
 *.log
