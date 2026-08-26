@@ -199,15 +199,19 @@ export async function handleAdjustAutocomplete(interaction) {
       return;
     }
     const focused = interaction.options.getFocused(true);
-    const user = interaction.options.getUser('member');
-    if (!user) {
+    // `getUser` does NOT work here and never will: an autocomplete payload carries no `resolved`
+    // block, so discord.js builds this resolver from the raw options and `option.user` is always
+    // undefined — getUser would return null on every keystroke and leave both pickers permanently
+    // empty. The raw value of a user option is the id itself, which is all this needs.
+    const userId = interaction.options.get('member')?.value;
+    if (!userId) {
       await interaction.respond([]);
       return;
     }
     const query = String(focused.value ?? '').toLowerCase();
 
     if (focused.name === 'game') {
-      const choices = db.getMemberGameNames(interaction.guild.id, user.id, CHOICE_LIMIT * 2)
+      const choices = db.getMemberGameNames(interaction.guild.id, userId, CHOICE_LIMIT * 2)
         .filter((name) => name.toLowerCase().includes(query))
         .slice(0, CHOICE_LIMIT)
         .map((name) => ({ name: name.slice(0, CHOICE_NAME_MAX), value: name }));
@@ -216,7 +220,7 @@ export async function handleAdjustAutocomplete(interaction) {
     }
 
     if (focused.name === 'session') {
-      const choices = db.getRecentSessions(interaction.guild.id, user.id, CHOICE_LIMIT)
+      const choices = db.getRecentSessions(interaction.guild.id, userId, CHOICE_LIMIT)
         .map((row) => ({
           // The id leads so a partially typed number still matches the session it names.
           name: `#${row.id} · ${row.game_name} · ${formatPlayTime(row.duration_seconds)} · `
