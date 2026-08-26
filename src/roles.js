@@ -29,9 +29,15 @@ export const WINNER_ROLE_COLOR = 0x95FDFF;
  */
 export const BARD_ROLE_COLOR = 0xE2A0D8;
 export const SCRIBE_ROLE_COLOR = 0xC9A87C;
-/** Cave stone. Grey is the one family no rank uses, and a badge for having been absent should be
- *  the quietest thing on the member list rather than a colour anybody would want. */
-export const CAVE_DWELLER_ROLE_COLOR = 0x7A8288;
+/**
+ * A plain, dark grey. Grey is the one family no rank uses, and a badge for having been absent
+ * should be the quietest thing on the member list rather than a colour anybody would want.
+ *
+ * Deliberately darker than the greys Discord hands out by default — an untouched role renders
+ * around #8D8D8D — so a Cave Dweller is visibly *dimmer* than an ordinary member rather than
+ * indistinguishable from one.
+ */
+export const CAVE_DWELLER_ROLE_COLOR = 0x5A5A5A;
 
 /**
  * Takes a badge off everyone, for a period nobody earned it. The role itself is left in place so it
