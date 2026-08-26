@@ -9,6 +9,7 @@ import { handleChanges } from './changes.js';
 import { handleEvent } from './event.js';
 import { handleHealth } from './health.js';
 import { handleBackup } from './backup.js';
+import { handleAdjust, handleAdjustAutocomplete } from './adjust.js';
 
 /**
  * Slash command definitions and the name → handler table.
@@ -41,6 +42,22 @@ export const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('backup').setDescription('Take an on-demand copy of the tracker database')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  // Administrator rather than Manage Server: these are the only commands that can lower a member's
+  // total and take a rank role back off them.
+  new SlashCommandBuilder().setName('adjust').setDescription('Correct tracked playtime that does not match reality')
+    .addSubcommand((sub) => sub.setName('time').setDescription('Add or remove minutes on one game for a member')
+      .addUserOption((option) => option.setName('member').setDescription('Member to correct').setRequired(true))
+      .addStringOption((option) => option.setName('game').setDescription('Game to correct (pick from the list)').setRequired(true).setAutocomplete(true))
+      .addIntegerOption((option) => option.setName('minutes').setDescription('Minutes to add, or a negative number to remove').setRequired(true)
+        .setMinValue(-525600).setMaxValue(525600))
+      .addStringOption((option) => option.setName('reason').setDescription('Why — recorded in the audit log').setMaxLength(200)))
+    .addSubcommand((sub) => sub.setName('session').setDescription('Void a bogus session and take back the time it credited')
+      .addUserOption((option) => option.setName('member').setDescription('Member whose session it is').setRequired(true))
+      .addIntegerOption((option) => option.setName('session').setDescription('Session to void (pick from the list)').setRequired(true).setAutocomplete(true))
+      .addStringOption((option) => option.setName('reason').setDescription('Why — recorded in the audit log').setMaxLength(200)))
+    .addSubcommand((sub) => sub.setName('log').setDescription('Show recent corrections')
+      .addUserOption((option) => option.setName('member').setDescription('Only this member (defaults to the whole server)')))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map((command) => command.toJSON());
 
 const HANDLERS = {
@@ -53,9 +70,21 @@ const HANDLERS = {
   event: handleEvent,
   health: handleHealth,
   backup: handleBackup,
+  adjust: handleAdjust,
+};
+
+// Separate from HANDLERS: an autocomplete interaction is a different Discord type that must be
+// answered with choices rather than a message, and only some commands have any.
+const AUTOCOMPLETE_HANDLERS = {
+  adjust: handleAdjustAutocomplete,
 };
 
 export async function handleChatInputCommand(interaction) {
   const handler = HANDLERS[interaction.commandName];
+  if (handler) await handler(interaction);
+}
+
+export async function handleAutocomplete(interaction) {
+  const handler = AUTOCOMPLETE_HANDLERS[interaction.commandName];
   if (handler) await handler(interaction);
 }

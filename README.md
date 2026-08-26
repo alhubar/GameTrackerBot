@@ -39,7 +39,7 @@ You can customize every announcement independently with `LEVEL_UP_MESSAGE_1` thr
 4. In the Discord Developer Portal, enable **Presence Intent** and **Server Members Intent** under **Bot → Privileged Gateway Intents**.
 5. Invite the bot with the `bot` and `applications.commands` scopes. Give it **Manage Roles**, and put its role above the tracker roles in the server role list.
 6. Start it with `npm start`.
-7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`. Administrators also get `/health` — see [Checking the bot is alive](#checking-the-bot-is-alive).
+7. A member with the **Manage Server** permission can run `/setup` in the channel where rank-up notifications should appear. This creates the tracker roles with the rank name alone (for example, `Villager`) and a default color. Then use `/info`, `/stats`, `/leaderboard`, or `/server`. Manage Server also gets `/backup` ([Backups](#backups)), and administrators get `/health` ([Checking the bot is alive](#checking-the-bot-is-alive)) and `/adjust` ([Correcting bad stats](#correcting-bad-stats)).
 
 `data/tracker.sqlite` is created automatically, and the bot keeps a rotating set of nightly backups of it — see
 [Backups](#backups).
@@ -151,6 +151,39 @@ same day-stamped name, so it replaces the day's copy rather than adding to the s
 
 Point `BACKUP_DIR` at a different disk than the database if you can. A backup beside the original does not survive
 losing the drive.
+
+## Correcting bad stats
+
+Sometimes what Discord reported is not what happened — a console that kept broadcasting a game into rest mode, a
+mis-reported presence, a session the bot recovered wrongly after a crash. `/adjust` is the fix path; before it existed
+the only option was editing the SQLite file by hand. It is restricted to administrators, and re-checks that itself in
+case the default was overridden under **Server Settings → Integrations**.
+
+- **`/adjust time`** — add or remove minutes on one game for one member. A negative number removes.
+- **`/adjust session`** — void one bogus session outright, taking back the time and the session tally it credited.
+- **`/adjust log`** — the audit trail, for one member or the whole server.
+
+Both the game and the session are picked from a list rather than typed. Game names arrive as free text from Discord
+presence, exact punctuation and all, so a typed name that is slightly wrong would not error — it would create a *new*
+game on the member's record and leave the wrong one untouched.
+
+Corrections cannot drive a total below zero, and a subtraction is capped at what that game actually holds: asking to
+remove two hours from a game with forty minutes on it removes forty, and the reply says so rather than quietly doing
+less than you asked. The member total and the per-game total always move by the same amount, so the two can never
+drift apart.
+
+**A correction can lower a rank**, and the rank role is updated to match — a rank names where a member stands now.
+The reply always states the totals before and after and any rank movement, so nothing about this is silent.
+**Achievements are never re-locked**, though: taking time back can drop a member below a threshold they have already
+cleared, and the unlock stays. That matches the rule the rest of the bot follows — raising a requirement never revokes
+what someone already earned — and the alternative is a correction quietly deleting a badge somebody was shown winning.
+
+Every applied correction is recorded permanently with who did it, to whom, how much and why. Those rows are never
+deleted or edited; an audit log that can be tidied up is not an audit log. `npm run db-check` reports the net total of
+corrections per server, since a total set by hand is otherwise indistinguishable from one that was earned.
+
+Take a `/backup` first if the correction is a large one. Inverting a mistake is one more `/adjust time` with the
+opposite sign, but a backup is the only way back from several corrections in a row.
 
 ## Maintenance
 

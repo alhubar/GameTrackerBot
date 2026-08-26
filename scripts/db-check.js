@@ -203,6 +203,25 @@ check('reminder rows whose event is gone', ['event_reminders_sent', 'events'],
   'SELECT r.event_id, r.stage_minutes FROM event_reminders_sent r LEFT JOIN events e ON e.id = r.event_id WHERE e.id IS NULL',
   expectFalsy('ERROR', 'none', (r) => `${plural(r.length, 'row')} orphaned`));
 
+console.log('\nManual corrections');
+// Not a fault of any kind — but a total that was set by hand is otherwise indistinguishable from
+// one that was earned, and that is exactly the context someone reading this report needs.
+check('recorded corrections', ['stat_adjustments'],
+  `SELECT guild_id, COUNT(*) AS n, SUM(delta_seconds) AS net FROM stat_adjustments GROUP BY guild_id`,
+  (rows, label) => {
+    if (!rows.length) { report('OK', label, 'none — no stats have been changed by hand'); return; }
+    report('NOTE', label, rows.map((r) =>
+      `guild ${r.guild_id}: ${plural(r.n, 'correction')}, net ${r.net < 0 ? '−' : '+'}${hours(Math.abs(r.net))}`).join('; '), rows);
+  });
+
+check('voided sessions that are still present', ['stat_adjustments', 'play_sessions'],
+  // play_sessions ids come from an AUTOINCREMENT column and are never reused, so a logged void
+  // whose session row still exists means the delete half of that transaction did not stick.
+  `SELECT a.id, a.session_id, a.guild_id FROM stat_adjustments a
+     JOIN play_sessions p ON p.id = a.session_id WHERE a.kind = 'session'`,
+  expectFalsy('ERROR', 'none', (r) => `${plural(r.length, 'session')} logged as voided but still in play_sessions`));
+
+console.log('');
 check('duplicate rank role assignments', ['rank_roles'],
   'SELECT guild_id, role_id, COUNT(*) AS uses FROM rank_roles GROUP BY guild_id, role_id HAVING COUNT(*) > 1',
   expectFalsy('ERROR', 'none', (r) => `${plural(r.length, 'role')} mapped to more than one rank`));

@@ -5,7 +5,7 @@ import {
   handleTimezoneCreateSelect, handleTimezoneEditSelect,
   handleEventCreateModal, handleEventEditModal,
 } from './events.js';
-import { handleChatInputCommand } from '../commands/index.js';
+import { handleChatInputCommand, handleAutocomplete } from '../commands/index.js';
 
 /**
  * The single InteractionCreate entry point.
@@ -39,6 +39,7 @@ function route(interaction) {
     return null;
   }
   if (interaction.isChatInputCommand()) return handleChatInputCommand;
+  if (interaction.isAutocomplete()) return handleAutocomplete;
   return null;
 }
 
@@ -49,6 +50,9 @@ export async function handleInteraction(interaction) {
     if (handler) await handler(interaction);
   } catch (error) {
     console.error('Command failed:', error);
+    // An autocomplete interaction can only be answered with choices, never a message, so there is
+    // nothing to report back to — the field simply stops loading.
+    if (interaction.isAutocomplete()) return;
     const message = 'Something went wrong. Confirm the bot has the required permissions and role position.';
     try {
       if (interaction.deferred) await interaction.editReply(message);

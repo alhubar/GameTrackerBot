@@ -100,6 +100,23 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       sent_at INTEGER NOT NULL,
       PRIMARY KEY (event_id, stage_minutes)
     );
+    -- Every manual stat correction, permanently. Rows are never deleted or edited: an audit log
+    -- that can be tidied up is not an audit log, and this is the only record that a member's total
+    -- was changed by hand rather than earned. delta_seconds is what was actually applied after
+    -- clamping, not what was asked for, so replaying the column reproduces the current totals.
+    CREATE TABLE IF NOT EXISTS stat_adjustments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      game_name TEXT,
+      delta_seconds INTEGER NOT NULL,
+      session_id INTEGER,
+      reason TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_stat_adjustments_guild_user ON stat_adjustments (guild_id, user_id, created_at);
   `);
   const activeSessionColumns = db.prepare('PRAGMA table_info(active_sessions)').all();
   if (!activeSessionColumns.some((column) => column.name === 'last_checkpoint_at')) {
@@ -158,6 +175,43 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     INSERT INTO play_sessions (guild_id, user_id, game_name, started_at, ended_at, duration_seconds)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
+  // Manual corrections. These are the only writes that can move a total *downwards*, so each one
+  // clamps at zero rather than trusting the caller — a stat going negative would read as an
+  // enormous number everywhere it is formatted, and there is no legitimate negative playtime.
+  const getGameStatsRow = db.prepare('SELECT total_seconds, session_count FROM game_stats WHERE guild_id = ? AND user_id = ? AND game_name = ?');
+  const setGameStatsRow = db.prepare(`
+    INSERT INTO game_stats (guild_id, user_id, game_name, total_seconds, session_count) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(guild_id, user_id, game_name) DO UPDATE SET
+      total_seconds = excluded.total_seconds, session_count = excluded.session_count
+  `);
+  const removeGameStatsRow = db.prepare('DELETE FROM game_stats WHERE guild_id = ? AND user_id = ? AND game_name = ?');
+  const setMemberTotal = db.prepare(`
+    INSERT INTO member_stats (guild_id, user_id, total_seconds) VALUES (?, ?, ?)
+    ON CONFLICT(guild_id, user_id) DO UPDATE SET total_seconds = excluded.total_seconds
+  `);
+  const getPlaySessionStmt = db.prepare('SELECT * FROM play_sessions WHERE id = ?');
+  const removePlaySession = db.prepare('DELETE FROM play_sessions WHERE id = ?');
+  const getRecentSessionsStmt = db.prepare(`
+    SELECT id, game_name, started_at, ended_at, duration_seconds FROM play_sessions
+    WHERE guild_id = ? AND user_id = ? ORDER BY ended_at DESC LIMIT ?
+  `);
+  // Includes a running session's game, which has no game_stats row until its first checkpoint —
+  // the mis-reported session an admin most wants to correct is often the one happening right now.
+  const getMemberGameNamesStmt = db.prepare(`
+    SELECT game_name, MAX(total_seconds) AS total_seconds FROM (
+      SELECT game_name, total_seconds FROM game_stats WHERE guild_id = ? AND user_id = ?
+      UNION ALL SELECT game_name, 0 FROM active_sessions WHERE guild_id = ? AND user_id = ?
+    ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT ?
+  `);
+  const recordAdjustmentStmt = db.prepare(`
+    INSERT INTO stat_adjustments (guild_id, user_id, actor_id, kind, game_name, delta_seconds, session_id, reason, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const getAdjustmentsStmt = db.prepare(`
+    SELECT * FROM stat_adjustments WHERE guild_id = ? AND (? IS NULL OR user_id = ?)
+    ORDER BY created_at DESC, id DESC LIMIT ?
+  `);
+
   const getNotificationChannel = db.prepare('SELECT notification_channel_id FROM guild_settings WHERE guild_id = ?');
   const setNotificationChannel = db.prepare(`
     INSERT INTO guild_settings (guild_id, notification_channel_id) VALUES (?, ?)
@@ -661,6 +715,73 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
      * keeps writing — a plain copy of the .sqlite/-wal/-shm trio can catch a checkpoint mid-commit.
      */
     backup: (destination) => db.backup(destination),
+
+    // ---- Manual corrections ------------------------------------------------------------------
+    // The only writes in this module that can lower a total. Both keep member_stats and game_stats
+    // moving by the same amount so the two cannot drift apart, and both run in a transaction
+    // because a half-applied correction is worse than none.
+
+    /**
+     * Adds (or, with a negative delta, removes) time on one game.
+     *
+     * A subtraction is bounded by what that game actually holds: asking to remove two hours from a
+     * game with forty minutes on it removes forty minutes, not two hours, because the rest was
+     * never this game's to give. The same clamped amount comes off member_stats, and the caller is
+     * told what was really applied so it can say so rather than silently doing less than asked.
+     *
+     * Note member_stats can legitimately exceed the sum of game_stats — per-game recording arrived
+     * later than the running totals — so the member total is never used to bound an addition.
+     */
+    adjustPlaytime: db.transaction((guildId, userId, gameName, deltaSeconds) => {
+      const game = getGameStatsRow.get(guildId, userId, gameName) ?? { total_seconds: 0, session_count: 0 };
+      const totalBefore = getStats.get(guildId, userId)?.total_seconds ?? 0;
+      const applied = deltaSeconds < 0
+        ? -Math.min(-deltaSeconds, game.total_seconds, totalBefore)
+        : deltaSeconds;
+      const gameAfter = game.total_seconds + applied;
+      const totalAfter = totalBefore + applied;
+      // A game with no time and no sessions left is not in the member's collection any more, and
+      // leaving an empty row behind would keep it counted by /stats' games-played tally.
+      if (gameAfter === 0 && game.session_count === 0) removeGameStatsRow.run(guildId, userId, gameName);
+      else setGameStatsRow.run(guildId, userId, gameName, gameAfter, game.session_count);
+      setMemberTotal.run(guildId, userId, totalAfter);
+      return { requestedSeconds: deltaSeconds, appliedSeconds: applied, totalBefore, totalAfter, gameAfter };
+    }),
+
+    getPlaySession: (sessionId) => getPlaySessionStmt.get(sessionId) ?? null,
+    /** Game names this member has on record, most-played first — the source for /adjust's picker. */
+    getMemberGameNames: (guildId, userId, limit = 25) =>
+      getMemberGameNamesStmt.all(guildId, userId, guildId, userId, limit).map((row) => row.game_name),
+    getRecentSessions: (guildId, userId, limit = 25) => getRecentSessionsStmt.all(guildId, userId, limit),
+
+    /**
+     * Voids one completed session: the history row goes, and the time and the session tally it
+     * contributed come back out of both stat tables.
+     *
+     * `guildId` is checked against the row rather than trusted, because play_sessions ids are a
+     * single global sequence — without it an admin in one guild could void a session in another by
+     * naming its id. Returns null when the id does not exist or belongs elsewhere.
+     */
+    deletePlaySession: db.transaction((guildId, sessionId) => {
+      const row = getPlaySessionStmt.get(sessionId);
+      if (!row || row.guild_id !== guildId) return null;
+      const game = getGameStatsRow.get(guildId, row.user_id, row.game_name) ?? { total_seconds: 0, session_count: 0 };
+      const totalBefore = getStats.get(guildId, row.user_id)?.total_seconds ?? 0;
+      const applied = -Math.min(row.duration_seconds, game.total_seconds, totalBefore);
+      const gameAfter = game.total_seconds + applied;
+      const sessionsAfter = Math.max(0, game.session_count - 1);
+      const totalAfter = totalBefore + applied;
+      if (gameAfter === 0 && sessionsAfter === 0) removeGameStatsRow.run(guildId, row.user_id, row.game_name);
+      else setGameStatsRow.run(guildId, row.user_id, row.game_name, gameAfter, sessionsAfter);
+      setMemberTotal.run(guildId, row.user_id, totalAfter);
+      removePlaySession.run(sessionId);
+      return { session: row, appliedSeconds: applied, totalBefore, totalAfter, gameAfter };
+    }),
+
+    recordAdjustment: ({ guildId, userId, actorId, kind, gameName = null, deltaSeconds, sessionId = null, reason = null }, now = Date.now()) =>
+      recordAdjustmentStmt.run(guildId, userId, actorId, kind, gameName, deltaSeconds, sessionId, reason, now).lastInsertRowid,
+    /** `userId` of null returns the whole guild's corrections rather than one member's. */
+    getAdjustments: (guildId, userId = null, limit = 10) => getAdjustmentsStmt.all(guildId, userId, userId, limit),
 
     // Achievements
     hasAchievement: (guildId, userId, achievementId) => !!hasAchievementStmt.get(guildId, userId, achievementId),
