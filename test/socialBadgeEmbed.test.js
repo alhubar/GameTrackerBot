@@ -145,9 +145,23 @@ test('a long list is trimmed rather than overflowing the field', () => {
   assert.ok(value.length < 1024, 'stays inside the field cap');
 });
 
-test('a week where everybody turned up says so, and reads as good news', () => {
-  const data = build({}, { caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: [] });
-  assert.match(field(data, 'Cave Dweller').value, /Nobody — everyone turned up this week/);
+test('a week where everybody turned up hides the row entirely', () => {
+  const data = build({ bard: row('alice', { voice: 90 }) }, {
+    caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: [],
+  });
+  assert.equal(field(data, 'Cave Dweller'), undefined,
+    'a row announcing that nobody was absent is a row about nothing');
+});
+
+test('with only cave dwellers to report and none of them, there is no card', () => {
+  const embed = buildSocialBadgesEmbed(
+    { bard: null, scribe: null, alsoTopped: new Map() },
+    {
+      displayNames: NAMES, range: RANGE, bardRoleName: null, scribeRoleName: null,
+      caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: [],
+    },
+  );
+  assert.equal(embed, null);
 });
 
 test('the badge is absent from the card when it is switched off', () => {

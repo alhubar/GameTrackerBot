@@ -134,7 +134,10 @@ export function buildSocialBadgesEmbed(awards, {
     },
   ].filter((badge) => badge.roleName);
 
-  const showCaveDwellers = caveDwellerRoleName && caveDwellerIds !== null;
+  // Only shown when somebody actually holds it. A row announcing that nobody was absent is a row
+  // about nothing, on a card otherwise entirely about people who did something — and the badge
+  // having no holders is already visible in that nobody is wearing it.
+  const showCaveDwellers = Boolean(caveDwellerRoleName && caveDwellerIds?.length);
   if (!badges.length && !showCaveDwellers) return null;
 
   const nameOf = (userId) => displayNames.get(userId) ?? 'Unknown member';
@@ -167,14 +170,11 @@ export function buildSocialBadgesEmbed(awards, {
   // Capped all the same: a field is 1024 characters, and a quiet week on a large server would
   // otherwise drop the whole embed rather than shorten one line.
   if (showCaveDwellers) {
-    const names = caveDwellerIds.map(nameOf);
-    const shown = names.slice(0, CAVE_DWELLERS_NAMED);
-    const rest = names.length - shown.length;
+    const shown = caveDwellerIds.slice(0, CAVE_DWELLERS_NAMED).map(nameOf);
+    const rest = caveDwellerIds.length - shown.length;
     embed.addFields({
       name: `🕳️ ${caveDwellerRoleName}`,
-      value: names.length
-        ? `**${shown.join('**, **')}**${rest ? ` _and ${rest} more_` : ''} watching from the shadows`
-        : `_Nobody — everyone turned up this ${range.periodNoun}_`,
+      value: `**${shown.join('**, **')}**${rest ? ` _and ${rest} more_` : ''} watching from the shadows`,
       inline: false,
     });
   }
