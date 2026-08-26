@@ -201,11 +201,16 @@ async function settleCaveDwellers(guild, range) {
     roleName: CAVE_DWELLER_ROLE,
     roleIcon: CAVE_DWELLER_ROLE_ICON,
     color: CAVE_DWELLER_ROLE_COLOR,
-    // Hoisted like the rest, so a badge always means its own section in the member list. This
-    // one was unhoisted at first, on the reasoning that a public "inactive" section is a harsher
-    // object than a coloured name — overruled deliberately: a badge nobody can see is not a badge,
-    // and the server that switches this on is asking for it to be visible.
+    // Hoisted like the rest, so a badge always means its own section in the member list.
     hoist: true,
+    // The one badge that goes to the *bottom* of the role list rather than the top. Discord orders
+    // hoisted sections by role position, so this puts the Cave Dwellers at the foot of the member
+    // list, under everybody — which is the right place for a badge that means "did nothing".
+    //
+    // It also means their rank role, sitting above it, keeps their name colour. That is the trade
+    // and it is the right way round: somebody who ground their way to a rank should not be
+    // recoloured grey for one quiet week, and the section already says everything the colour would.
+    placement: 'bottom',
     siblingRoleNames: BADGE_ROLE_NAMES,
     reason: `${CAVE_DWELLER_ROLE} — inactivity badge`,
     awardReason: `${CAVE_DWELLER_ROLE} — nothing recorded last ${range.periodNoun}`,

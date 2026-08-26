@@ -40,6 +40,19 @@ export const SCRIBE_ROLE_COLOR = 0xC9A87C;
 export const CAVE_DWELLER_ROLE_COLOR = 0x5A5A5A;
 
 /**
+ * Makes sure the member cache is complete, without asking Discord when it already is.
+ *
+ * A bare `guild.members.fetch()` is a gateway request on a tight bucket, and one recap now settles
+ * four badges — each needing the full membership to find previous holders. Four blind fetches in a
+ * burst is enough to be rate limited, and the rate limit then takes the recap down with it. This
+ * is the same guard `presentMemberIds` already applies for the same reason.
+ */
+async function ensureMembersCached(guild) {
+  if (guild.memberCount && guild.members.cache.size >= guild.memberCount) return;
+  await guild.members.fetch().catch(() => null);
+}
+
+/**
  * Takes a badge off everyone, for a period nobody earned it. The role itself is left in place so it
  * keeps its position and colour for next time.
  */
@@ -47,7 +60,7 @@ export async function clearWinnerRole(guild, roleName) {
   if (!roleName) return null;
   const role = guild.roles.cache.find((candidate) => candidate.name === roleName);
   if (!role) return null;
-  await guild.members.fetch().catch(() => null);
+  await ensureMembersCached(guild);
   for (const holder of role.members.values()) {
     await holder.roles.remove(role, `No longer ${roleName}`).catch((error) =>
       console.error(`Could not take the badge from ${memberRef(holder.id)}:`, error));
@@ -91,7 +104,7 @@ function colouredRoleAbove(guild, role, siblingRoleNames = []) {
  */
 async function ensureBadgeRole(guild, {
   roleName, roleIcon = null, color = WINNER_ROLE_COLOR,
-  hoist = true, reason = `${roleName} — badge`, siblingRoleNames = [],
+  hoist = true, reason = `${roleName} — badge`, siblingRoleNames = [], placement = 'top',
 } = {}) {
   if (!roleName) return null;
   let role = guild.roles.cache.find((candidate) => candidate.name === roleName);
@@ -116,9 +129,19 @@ async function ensureBadgeRole(guild, {
   // not need separate positions, because the award pass guarantees nobody holds two — and walking
   // each successive badge one place lower marches them straight into the rank roles, where the
   // third or fourth ends up beneath a rank and is silently overridden on anyone who holds it.
+  //
+  // A `bottom` badge is the deliberate opposite: it goes to the very bottom of the list, under
+  // every rank. Discord orders the member list's hoisted sections by role position, so the lowest
+  // hoisted role is the lowest section — which is exactly where a badge for having done nothing
+  // belongs. Nothing has to be stripped to achieve it: no rank role in this bot is hoisted, so a
+  // member's section is decided by their badge alone regardless of what else they hold.
   if (isNew) {
     const ceiling = guild.members.me?.roles.highest.position;
-    if (ceiling && ceiling > 1) {
+    if (placement === 'bottom') {
+      // 1 rather than 0 — @everyone owns position 0 and cannot be displaced.
+      await role.setPosition(1, { reason: 'Badge belongs at the foot of the member list' })
+        .catch((error) => console.error(`Could not lower the ${roleName} role:`, error));
+    } else if (ceiling && ceiling > 1) {
       await role.setPosition(ceiling - 1, { reason: 'Badge colour must outrank the rank roles' })
         .catch((error) => console.error(`Could not raise the ${roleName} role:`, error));
     }
@@ -126,7 +149,10 @@ async function ensureBadgeRole(guild, {
   // Badges land under the bot's role, so the bot needs room above the ranks for all of them. When
   // it does not, they spill below and stop showing — the single most common real-world failure in
   // this bot, and completely silent. Say so plainly rather than leaving it to be noticed.
-  const rival = colouredRoleAbove(guild, role, siblingRoleNames);
+  //
+  // Not for a `bottom` badge, though: being outranked is the entire point of putting it there, so
+  // its holder keeps whatever colour they had earned and is separated by section instead.
+  const rival = placement === 'bottom' ? null : colouredRoleAbove(guild, role, siblingRoleNames);
   if (rival !== null) {
     console.warn(`The ${roleName} badge is at position ${role.position}, below a coloured role at `
       + `${rival} — its colour will be overridden. Move the bot's own role higher.`);
@@ -154,7 +180,7 @@ export async function syncBadgeRoleMembers(guild, userIds, options = {}) {
   if (!role) return null;
 
   const wanted = new Set(userIds);
-  await guild.members.fetch().catch(() => null);
+  await ensureMembersCached(guild);
   for (const holder of role.members.values()) {
     if (wanted.has(holder.id)) continue;
     await holder.roles.remove(role, `No longer ${roleName}`).catch((error) =>
@@ -214,7 +240,7 @@ export async function awardBadgeRole(guild, userId, options = {}) {
 
   // role.members only sees cached members, so a previous holder who happens to be offline would
   // silently keep the badge without this.
-  await guild.members.fetch().catch(() => null);
+  await ensureMembersCached(guild);
   for (const holder of role.members.values()) {
     if (holder.id === userId) continue;
     await holder.roles.remove(role, `No longer ${roleName}`).catch((error) =>
