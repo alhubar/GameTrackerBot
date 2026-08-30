@@ -1,5 +1,4 @@
 import { escapeMarkdown } from 'discord.js';
-import { db } from './runtime.js';
 import { formatPlayTime } from './ranks.js';
 import { COUNTS_AS_PLAYED_SECONDS } from './achievements.js';
 
@@ -18,6 +17,9 @@ import { COUNTS_AS_PLAYED_SECONDS } from './achievements.js';
  * own embed field (`emoji + label` as the field name), while `/server` renders it as a bold text
  * heading. Handing back pre-joined lines forced the card to stuff every record into one field under
  * a wrapper heading, which read as an extra blank line the other sections did not have.
+ *
+ * `db` is a parameter rather than the runtime singleton for the same reason it is in ui.js:
+ * importing runtime.js opens the configured database, which would make this module untestable.
  */
 
 /**
@@ -46,7 +48,7 @@ async function memberName(guild, userId) {
  * case rather than printing a placeholder: neither surface labels this block, so a lone
  * "nothing here yet" line would sit under no heading and read as a stray fragment.
  */
-export async function buildServerRecords(guild) {
+export async function buildServerRecords(db, guild) {
   const records = db.getServerRecords(guild.id, COUNTS_AS_PLAYED_SECONDS);
   const out = [];
 

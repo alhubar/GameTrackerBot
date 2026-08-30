@@ -1,9 +1,15 @@
 import { escapeMarkdown } from 'discord.js';
-import { db } from './runtime.js';
 import { RANKS, formatPlayTime, rankForSeconds } from './ranks.js';
 import { RECAP_BADGES } from './recap.js';
 
-/** Rendering helpers shared by more than one command or card view. */
+/**
+ * Rendering helpers shared by more than one command or card view.
+ *
+ * The builders below take `db` as a parameter rather than importing the runtime singleton — the
+ * same shape socialTracking.js uses, and for the same reason: importing runtime.js opens the
+ * configured database, so a module that does it can never be loaded by a test. Every caller
+ * already has the handle.
+ */
 
 /** Finds a text channel by name, the way every configured channel in .env is resolved. */
 export function findTextChannel(guild, name) {
@@ -62,12 +68,12 @@ export async function leaderboardLines(rows, guild, { showRank = true, limit = L
   });
 }
 
-export async function buildLeaderboardLines(guild) {
+export async function buildLeaderboardLines(db, guild) {
   const lines = await leaderboardLines(db.getLeaderboard(guild.id, LEADERBOARD_CANDIDATES), guild);
   return lines ?? ['No tracked play time yet.'];
 }
 
-export async function buildMonthlyLeaderboardLines(guild) {
+export async function buildMonthlyLeaderboardLines(db, guild) {
   const now = Date.now();
   const nowDate = new Date(now);
   const monthStart = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1);
@@ -76,7 +82,7 @@ export async function buildMonthlyLeaderboardLines(guild) {
   return lines ?? ['No tracked play time yet this month.'];
 }
 
-export async function buildServerProfileParts(guild) {
+export async function buildServerProfileParts(db, guild) {
   // Total gaming time deliberately still counts departed members: it is the server's history, not
   // a roster. Only the "most active players" ranking is filtered.
   const profile = db.getServerProfile(guild.id, Date.now(), TOP_PLAYERS_CANDIDATES);
@@ -107,7 +113,7 @@ const HALL_OF_FAME_SIZE = 3;
  * about who is here to be ranked today. Opted-out members are filtered in SQL, because that part
  * *is* a ranking of members and every ranking hides them.
  */
-export async function buildHallOfFameLines(guild, limit = HALL_OF_FAME_SIZE) {
+export async function buildHallOfFameLines(db, guild, limit = HALL_OF_FAME_SIZE) {
   const rows = db.getHallOfFame(guild.id, limit);
   if (!rows.length) return null;
   // Called for the cache it warms, not the ids it returns: names have to resolve for members this

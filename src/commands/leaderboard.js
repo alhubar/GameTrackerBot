@@ -1,9 +1,10 @@
+import { db } from '../runtime.js';
 import { buildLeaderboardLines, buildMonthlyLeaderboardLines } from '../ui.js';
 
 export async function handleLeaderboard(interaction) {
   const [allTime, monthly] = await Promise.all([
-    buildLeaderboardLines(interaction.guild),
-    buildMonthlyLeaderboardLines(interaction.guild),
+    buildLeaderboardLines(db, interaction.guild),
+    buildMonthlyLeaderboardLines(db, interaction.guild),
   ]);
   await interaction.reply([
     '**All-Time Leaderboard**',

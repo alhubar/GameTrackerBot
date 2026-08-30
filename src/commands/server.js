@@ -5,7 +5,7 @@ import { buildServerProfileParts, buildHallOfFameLines, splitDiscordMessage } fr
 import { buildServerRecords, recordsAsLines } from '../records.js';
 
 export async function handleServer(interaction) {
-  const { profile, topGames, topPlayers } = await buildServerProfileParts(interaction.guild);
+  const { profile, topGames, topPlayers } = await buildServerProfileParts(db, interaction.guild);
   const serverAchievements = getUnlockedServerAchievements(db, interaction.guild.id);
   const achievementLines = serverAchievements.length
     ? serverAchievements.map((row) => {
@@ -13,8 +13,8 @@ export async function handleServer(interaction) {
         return `└ ${a.emoji} **${a.name}** — ${a.description}`;
       })
     : ['└ None yet — keep growing!'];
-  const records = await buildServerRecords(interaction.guild);
-  const hallOfFame = await buildHallOfFameLines(interaction.guild);
+  const records = await buildServerRecords(db, interaction.guild);
+  const hallOfFame = await buildHallOfFameLines(db, interaction.guild);
   const text = [
     '🏰 **Server Gaming Statistics**',
     '',

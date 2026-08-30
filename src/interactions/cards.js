@@ -51,12 +51,12 @@ export async function buildCardEmbed(view, guild, member, user, requestedPage = 
     page = Math.min(Math.max(0, requestedPage), totalPages - 1);
     embed.setColor(CARD_ACCENT_COLOR);
     if (page === 0) {
-      embed.setTitle('📈 Leaderboard — All-Time').setDescription((await buildLeaderboardLines(guild)).join('\n'));
+      embed.setTitle('📈 Leaderboard — All-Time').setDescription((await buildLeaderboardLines(db, guild)).join('\n'));
     } else {
-      embed.setTitle('📈 Leaderboard — This Month').setDescription((await buildMonthlyLeaderboardLines(guild)).join('\n'));
+      embed.setTitle('📈 Leaderboard — This Month').setDescription((await buildMonthlyLeaderboardLines(db, guild)).join('\n'));
     }
   } else if (view === 'server') {
-    const { profile, topGames, topPlayers } = await buildServerProfileParts(guild);
+    const { profile, topGames, topPlayers } = await buildServerProfileParts(db, guild);
     const serverAchievements = getUnlockedServerAchievements(db, guild.id);
     const achievementPages = Math.max(1, Math.ceil(serverAchievements.length / ACHIEVEMENTS_PAGE_SIZE));
     totalPages = 1 + achievementPages;
@@ -65,8 +65,8 @@ export async function buildCardEmbed(view, guild, member, user, requestedPage = 
     embed.setColor(CARD_ACCENT_COLOR);
 
     if (page === 0) {
-      const records = await buildServerRecords(guild);
-      const hallOfFame = await buildHallOfFameLines(guild);
+      const records = await buildServerRecords(db, guild);
+      const hallOfFame = await buildHallOfFameLines(db, guild);
       embed.setTitle('🏰 Server Stats').addFields(
         { name: '⏱️ Total gaming time', value: formatPlayTime(profile.totalSeconds), inline: true },
         { name: '🏆 Most played games', value: topGames.join('\n'), inline: false },
