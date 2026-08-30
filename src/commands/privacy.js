@@ -36,6 +36,7 @@ export function buildStatusEmbed(guildId, userId) {
       + ` · 🎙️ voice: **${formatPlayTime(stored.social.voice_minutes * 60)}**`
       + ` — across **${stored.social.days}** ${stored.social.days === 1 ? 'day' : 'days'}`);
   }
+  if (stored.recapWins) rows.push(`🎖️ Recap badges won: **${stored.recapWins}**`);
   if (stored.corrections) rows.push(`✏️ Admin corrections to your stats: **${stored.corrections}**`);
   if (stored.activeSession) rows.push('▶️ You have a session in progress right now.');
   if (stored.inVoice) rows.push('🎙️ You are in a voice channel right now.');

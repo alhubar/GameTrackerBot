@@ -163,7 +163,11 @@ async function settleSocialBadges(guild, recap, championId) {
 
   await applyCaveDwellerRole(guild, range, caveDwellerIds);
 
-  return buildSocialBadgesEmbed(awards, {
+  // The awards travel back out alongside the card because `announceRecap` writes every badge
+  // holder down in one place. Recording them here would split that record across two functions and
+  // put a permanent write inside the half that renders — the separation `computeSocialBadges`
+  // exists to keep.
+  const embed = buildSocialBadgesEmbed(awards, {
     displayNames,
     range,
     bardRoleName: BARD_ROLE || null,
@@ -173,6 +177,28 @@ async function settleSocialBadges(guild, recap, championId) {
     caveDwellerRoleName: CAVE_DWELLER_ENABLED ? (CAVE_DWELLER_ROLE || null) : null,
     caveDwellerIds,
   });
+  return { embed, awards };
+}
+
+/**
+ * Writes down who took each badge, so a period leaves something behind once its roles move on.
+ *
+ * Called whether or not the recap reached a channel, for the same reason `markRecapAnnounced` is:
+ * the roles were handed over regardless, and a badge worn but never recorded is a worse outcome
+ * than one recorded but never posted. An unclaimed badge writes nothing — there is no holder to
+ * name, and a row saying so would have to invent a member id.
+ */
+function recordRecapWinners(guild, recap, awards, now) {
+  const periodKey = recap.range.key;
+  const record = (badge, userId, metricSeconds) => {
+    if (!userId) return;
+    db.recordRecapWinner({ guildId: guild.id, periodKey, badge, userId, metricSeconds }, now);
+  };
+  if (recap.winner) record('champion', recap.winner.userId, recap.winner.totalSeconds);
+  // The social boards are counted in minutes; the column is seconds for every badge, so they are
+  // multiplied out here rather than leaving one row in a different unit from its neighbours.
+  record('bard', awards?.bard?.user_id, (awards?.bard?.voice_minutes ?? 0) * 60);
+  record('scribe', awards?.scribe?.user_id, (awards?.scribe?.text_minutes ?? 0) * 60);
 }
 
 /**
@@ -244,11 +270,12 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
 
   // One post for the whole period. The badges are settled first so that whichever branch below
   // runs, its message carries the same companion card.
-  const socialEmbed = await settleSocialBadges(guild, recap, recap.winner?.userId ?? null)
+  const social = await settleSocialBadges(guild, recap, recap.winner?.userId ?? null)
     .catch((error) => {
       console.error('Could not settle the social badges:', error);
       return null;
     });
+  const socialEmbed = social?.embed ?? null;
 
   if (!recap.winner) {
     // Nobody cleared the bar, so the badge comes off whoever held it and the period is announced
@@ -263,9 +290,16 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
       await channel.send({ embeds: [embed, socialEmbed].filter(Boolean) })
         .catch((error) => console.error('Could not post the recap:', error));
     }
+    // No champion, but the talking badges are decided independently and may well have been given
+    // out — a period nobody played is exactly the sort where they are the only thing that happened.
+    recordRecapWinners(guild, recap, social?.awards, now);
     markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
     return recap;
   }
+
+  // Read before the row below is written, and with this period excluded, so the ordinal is the
+  // same whether this is the first pass over the period or a forced repeat.
+  const winNumber = db.getRecapWinCount(guild.id, recap.winner.userId, 'champion', recap.range.key) + 1;
 
   const role = await awardWinnerRole(guild, recap.winner.userId, {
     roleName: RECAP_WINNER_ROLE,
@@ -284,10 +318,12 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
       displayNames,
       avatarUrl: winnerMember?.displayAvatarURL() ?? null,
       roleName: role?.name ?? null,
+      winNumber,
     });
     await channel.send({ embeds: [embed, socialEmbed].filter(Boolean) })
       .catch((error) => console.error('Could not post the recap:', error));
   }
+  recordRecapWinners(guild, recap, social?.awards, now);
   markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
   return recap;
 }

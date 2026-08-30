@@ -283,6 +283,33 @@ check('social activity recorded after opting out', ['tracking_optouts', 'social_
       AND (s.text_minutes > 0 OR s.voice_minutes > 0)`,
   expectFalsy('WARN', 'none', (r) => `${plural(r.length, 'day-row')} written after the member opted out`));
 
+console.log('\nRecap winners');
+// Guarded on the table: recap_winners arrived after this script did, so a snapshot taken before
+// then simply will not have it, and a gap is a skipped check rather than a crash.
+check('recorded badges', ['recap_winners'],
+  `SELECT guild_id, COUNT(*) AS n, COUNT(DISTINCT period_key) AS periods,
+          COUNT(DISTINCT user_id) AS members
+     FROM recap_winners GROUP BY guild_id`,
+  (rows, label) => {
+    if (!rows.length) { report('OK', label, 'none yet — no recap has handed one out'); return; }
+    report('NOTE', label, rows.map((r) =>
+      `guild ${r.guild_id}: ${plural(r.n, 'badge')} across ${plural(r.periods, 'period')} `
+      + `for ${plural(r.members, 'member')}`).join('; '), rows);
+  });
+
+check('badges of an unknown kind', ['recap_winners'],
+  // `badge` is free text at the schema level, so a typo in a new badge key writes rows that every
+  // reader silently ignores — they would simply never appear on anybody's card.
+  "SELECT guild_id, period_key, badge, user_id FROM recap_winners "
+  + "WHERE badge NOT IN ('champion', 'bard', 'scribe')",
+  expectFalsy('ERROR', 'none — every row is a champion, bard or scribe',
+    (r) => `${plural(r.length, 'row')} with a badge nothing renders`));
+
+check('badges recorded with negative time', ['recap_winners'],
+  // recordRecapWinner clamps at zero, so a negative means something wrote the row directly.
+  'SELECT guild_id, period_key, badge, user_id, metric_seconds FROM recap_winners WHERE metric_seconds < 0',
+  expectFalsy('ERROR', 'none', (r) => `${plural(r.length, 'row')} below zero`));
+
 console.log('\nManual corrections');
 // Not a fault of any kind — but a total that was set by hand is otherwise indistinguishable from
 // one that was earned, and that is exactly the context someone reading this report needs.

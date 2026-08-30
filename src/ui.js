@@ -1,6 +1,7 @@
 import { escapeMarkdown } from 'discord.js';
 import { db } from './runtime.js';
 import { RANKS, formatPlayTime, rankForSeconds } from './ranks.js';
+import { RECAP_BADGES } from './recap.js';
 
 /** Rendering helpers shared by more than one command or card view. */
 
@@ -93,6 +94,33 @@ export async function buildServerProfileParts(guild) {
       })
     : ['└ No player activity recorded yet'];
   return { profile, topGames, topPlayers };
+}
+
+/** Matches the three-deep medal lists either side of it on /server and the server card. */
+const HALL_OF_FAME_SIZE = 3;
+
+/**
+ * The members who have taken the most recap badges, or null when none has ever been handed out.
+ *
+ * Departed winners are deliberately kept. They did win it, and the recap said so with their name at
+ * the time — the same call the server records make, and the opposite of the leaderboards, which are
+ * about who is here to be ranked today. Opted-out members are filtered in SQL, because that part
+ * *is* a ranking of members and every ranking hides them.
+ */
+export async function buildHallOfFameLines(guild, limit = HALL_OF_FAME_SIZE) {
+  const rows = db.getHallOfFame(guild.id, limit);
+  if (!rows.length) return null;
+  // Called for the cache it warms, not the ids it returns: names have to resolve for members this
+  // card does not filter on.
+  await presentMemberIds(guild);
+  const medals = ['🥇', '🥈', '🥉'];
+  return rows.map((row, index) => {
+    const member = guild.members.cache.get(row.user_id);
+    const name = escapeMarkdown(member?.displayName ?? 'Former member');
+    const breakdown = RECAP_BADGES.filter((badge) => row[badge.key])
+      .map((badge) => `${badge.emoji}${row[badge.key]}`).join(' ');
+    return `└ ${medals[index]} ${name} — **${row.wins}** ${row.wins === 1 ? 'badge' : 'badges'} · ${breakdown}`;
+  });
 }
 
 export function splitDiscordMessage(content, maxLength = 2000) {

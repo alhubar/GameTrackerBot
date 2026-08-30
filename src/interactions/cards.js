@@ -8,7 +8,9 @@ import {
 import { RANKS, formatPlayTime, rankForSeconds } from '../ranks.js';
 import { ACHIEVEMENTS, achievementById, getUnlockedAchievements } from '../achievements.js';
 import { SERVER_ACHIEVEMENTS, serverAchievementById, getUnlockedServerAchievements } from '../serverAchievements.js';
-import { buildLeaderboardLines, buildMonthlyLeaderboardLines, buildServerProfileParts } from '../ui.js';
+import {
+  buildLeaderboardLines, buildMonthlyLeaderboardLines, buildServerProfileParts, buildHallOfFameLines,
+} from '../ui.js';
 import { buildServerRecords, recordsAsFields } from '../records.js';
 
 /**
@@ -64,6 +66,7 @@ export async function buildCardEmbed(view, guild, member, user, requestedPage = 
 
     if (page === 0) {
       const records = await buildServerRecords(guild);
+      const hallOfFame = await buildHallOfFameLines(guild);
       embed.setTitle('🏰 Server Stats').addFields(
         { name: '⏱️ Total gaming time', value: formatPlayTime(profile.totalSeconds), inline: true },
         { name: '🏆 Most played games', value: topGames.join('\n'), inline: false },
@@ -72,6 +75,9 @@ export async function buildCardEmbed(view, guild, member, user, requestedPage = 
         // wrapper field would need a name Discord accepts, and even a zero-width space still
         // occupies its own line — which showed up as a blank gap the other sections do not have.
         ...recordsAsFields(records),
+        // Omitted until a recap has actually handed something out, so a new server does not
+        // carry an empty monument to a week that has not happened yet.
+        ...(hallOfFame ? [{ name: '🎖️ Hall of Fame', value: hallOfFame.join('\n'), inline: false }] : []),
         { name: '🏆 Server achievements', value: `${serverAchievements.length}/${SERVER_ACHIEVEMENTS.length}`, inline: false },
       );
     } else {

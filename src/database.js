@@ -77,6 +77,32 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       unlocked_at INTEGER NOT NULL,
       PRIMARY KEY (guild_id, achievement_id)
     );
+    -- Every badge the recap has ever handed out: one row per period, per badge.
+    --
+    -- Without this the whole history is thrown away. guild_settings.last_monthly_recap records
+    -- only *which* period was last announced, so the moment the next one turns over there is no
+    -- longer anything anywhere saying who won the last — the role has simply moved on.
+    --
+    -- Cave Dweller is deliberately **not** recorded here. It lands on however many members were
+    -- absent rather than on one, and it comes off the instant somebody turns up; a permanent,
+    -- countable tally of who was missing week after week is a very different object from a role
+    -- that clears itself, and a far less kind one. The badges kept here are the ones a member
+    -- would want counted.
+    --
+    -- metric_seconds is always seconds, whichever badge the row belongs to — playtime for the
+    -- champion, social minutes multiplied out for the other two — so one column never has to be
+    -- read in two units depending on its neighbour.
+    CREATE TABLE IF NOT EXISTS recap_winners (
+      guild_id TEXT NOT NULL,
+      period_key TEXT NOT NULL,
+      badge TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      metric_seconds INTEGER NOT NULL DEFAULT 0,
+      awarded_at INTEGER NOT NULL,
+      PRIMARY KEY (guild_id, period_key, badge)
+    );
+    -- A member's own tally reads every period for one member, which the primary key cannot serve.
+    CREATE INDEX IF NOT EXISTS idx_recap_winners_guild_user ON recap_winners (guild_id, user_id);
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guild_id TEXT NOT NULL,
@@ -372,6 +398,46 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     INSERT INTO guild_settings (guild_id, last_monthly_recap) VALUES (?, ?)
     ON CONFLICT(guild_id) DO UPDATE SET last_monthly_recap = excluded.last_monthly_recap
   `);
+  // ---- Recap winners -------------------------------------------------------------------------
+
+  // Upsert rather than insert: `announceRecap` can be re-run for a period it has already settled
+  // (the preview scripts do exactly that, and `force` exists for it), and a second pass should
+  // correct the record rather than refuse or duplicate it.
+  const recordRecapWinnerStmt = db.prepare(`
+    INSERT INTO recap_winners (guild_id, period_key, badge, user_id, metric_seconds, awarded_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(guild_id, period_key, badge) DO UPDATE SET
+      user_id = excluded.user_id,
+      metric_seconds = excluded.metric_seconds,
+      awarded_at = excluded.awarded_at
+  `);
+  const getRecapWinCountsStmt = db.prepare(
+    'SELECT badge, COUNT(*) AS wins FROM recap_winners WHERE guild_id = ? AND user_id = ? GROUP BY badge');
+  // The exclusion is what makes "their 3rd win" survive a re-run: `announceRecap` can settle a
+  // period it has already recorded, and counting the row it is about to write would report a win
+  // one higher every time. Excluding by key rather than by date keeps it exact without depending on
+  // period keys sorting against each other, which week and month keys do not.
+  const getRecapWinCountStmt = db.prepare(`
+    SELECT COUNT(*) AS wins FROM recap_winners
+    WHERE guild_id = ? AND user_id = ? AND badge = ? AND (? IS NULL OR period_key <> ?)
+  `);
+  // A ranking of members, so opted-out members are hidden exactly as they are everywhere else.
+  // Departed members are NOT filtered here, and that is the same call the server records make:
+  // this is a record of what happened, not a roster of who is around to be ranked today.
+  const getHallOfFameStmt = db.prepare(`
+    SELECT user_id, COUNT(*) AS wins,
+           SUM(badge = 'champion') AS champion,
+           SUM(badge = 'bard') AS bard,
+           SUM(badge = 'scribe') AS scribe
+    FROM recap_winners
+    WHERE guild_id = ? AND ${NOT_OPTED_OUT('recap_winners')}
+    GROUP BY user_id
+    ORDER BY wins DESC, champion DESC, user_id
+    LIMIT ?
+  `);
+  const getRecapWinnersForPeriodStmt = db.prepare(
+    'SELECT badge, user_id, metric_seconds, awarded_at FROM recap_winners WHERE guild_id = ? AND period_key = ?');
+
   const getRankRoles = db.prepare('SELECT rank_index, role_id FROM rank_roles WHERE guild_id = ? ORDER BY rank_index');
   const saveRankRole = db.prepare(`
     INSERT INTO rank_roles (guild_id, rank_index, role_id) VALUES (?, ?, ?)
@@ -1138,6 +1204,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
         `).get(guildId, userId).n,
         eventsCreated: count('SELECT COUNT(*) AS n FROM events WHERE guild_id = ? AND creator_id = ?'),
         corrections: count('SELECT COUNT(*) AS n FROM stat_adjustments WHERE guild_id = ? AND user_id = ?'),
+        recapWins: count('SELECT COUNT(*) AS n FROM recap_winners WHERE guild_id = ? AND user_id = ?'),
         // All time rather than the current period: this answers "what do you hold about me",
         // which is not the same question the badges ask.
         social: db.prepare(`
@@ -1172,6 +1239,10 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       // no anonymising, and no pair-table side effect on another member's count.
       run('socialDays', 'DELETE FROM social_days WHERE guild_id = ? AND user_id = ?');
       run('activeVoice', 'DELETE FROM active_voice WHERE guild_id = ? AND user_id = ?');
+      // A plain delete, unlike the events and corrections below: a badge documents what this member
+      // did, not something anybody else did to them, so there is nothing here belonging to a second
+      // person that anonymising would preserve. The period simply loses its named holder.
+      run('recapWins', 'DELETE FROM recap_winners WHERE guild_id = ? AND user_id = ?');
       removed.duoDays = db.prepare(
         'DELETE FROM duo_days WHERE guild_id = ? AND (user_id_a = ? OR user_id_b = ?)',
       ).run(guildId, userId, userId).changes;
@@ -1248,6 +1319,21 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     `).all(guildId, userId, fromMs, toMs).map((row) => row.achievement_id),
     getLastMonthlyRecap: (guildId) => getLastMonthlyRecapStmt.get(guildId)?.last_monthly_recap ?? null,
     setLastMonthlyRecap: (guildId, monthKey) => setLastMonthlyRecapStmt.run(guildId, monthKey),
+
+    // ---- Recap winners -----------------------------------------------------------------------
+
+    /** Records one badge for one period. Re-recording the same period and badge corrects it. */
+    recordRecapWinner: ({ guildId, periodKey, badge, userId, metricSeconds = 0 }, now = Date.now()) =>
+      recordRecapWinnerStmt.run(guildId, periodKey, badge, userId, Math.max(0, Math.round(metricSeconds)), now).changes,
+    /** Every badge this member has ever taken, as `{ <badge>: wins }`. Absent badges are omitted. */
+    getRecapWinCounts: (guildId, userId) => Object.fromEntries(
+      getRecapWinCountsStmt.all(guildId, userId).map((row) => [row.badge, row.wins]),
+    ),
+    /** `excludePeriodKey` leaves that one period out, so a re-run counts the same as a first run. */
+    getRecapWinCount: (guildId, userId, badge, excludePeriodKey = null) =>
+      getRecapWinCountStmt.get(guildId, userId, badge, excludePeriodKey, excludePeriodKey).wins,
+    getHallOfFame: (guildId, limit = 5) => getHallOfFameStmt.all(guildId, limit),
+    getRecapWinnersForPeriod: (guildId, periodKey) => getRecapWinnersForPeriodStmt.all(guildId, periodKey),
     recordDuoDay: (guildId, userIdA, userIdB, day) => recordDuoDayStmt.run(guildId, userIdA, userIdB, day),
     getDuoDayCount: (guildId, userIdA, userIdB) => getDuoDayCountStmt.get(guildId, userIdA, userIdB).count,
 

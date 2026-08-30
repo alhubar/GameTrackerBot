@@ -40,11 +40,22 @@ export function buildServerAchievementEmbed(tier, guildIconUrl = null) {
     .setDescription(tier.celebration);
 }
 
+/** 1st, 2nd, 3rd, 4th… with the 11th–13th exceptions English needs and the naive rule gets wrong. */
+export function ordinal(n) {
+  const teens = n % 100;
+  if (teens >= 11 && teens <= 13) return `${n}th`;
+  return `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
+}
+
 /**
  * The end-of-period showpiece. `recap` comes from buildRecap; `displayNames` maps user ids to
  * names so this stays free of Discord lookups, and `avatarUrl` is the winner's picture.
+ *
+ * `winNumber` is which win this is for them, counting every period on record. It is shown only from
+ * the second onwards — "1st time taking the title" is what winning already means, and printing it
+ * under every first-time winner makes the line read as boilerplate rather than as a run.
  */
-export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = null }) {
+export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = null, winNumber = 1 }) {
   const { winner, range } = recap;
   const nameOf = (userId) => displayNames.get(userId) ?? 'Unknown member';
 
@@ -55,7 +66,10 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
     .setAuthor({ name: `🏆 ${range.title}` })
     .setTitle(nameOf(winner.userId))
     .setDescription(`**${formatPlayTime(winner.totalSeconds)}** played across **${winner.gamesPlayed}** `
-      + `${winner.gamesPlayed === 1 ? 'game' : 'different games'} last ${range.periodNoun}.`);
+      + `${winner.gamesPlayed === 1 ? 'game' : 'different games'} last ${range.periodNoun}.`
+      + (winNumber > 1 ? `
+
+👑 Their **${ordinal(winNumber)} time** taking the title.` : ''));
 
   if (winner.topGame) {
     embed.addFields({

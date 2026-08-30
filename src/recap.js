@@ -14,6 +14,24 @@ const WEEK_MS = 7 * 24 * 60 * 60_000;
 
 export const RECAP_PERIODS = ['week', 'month'];
 
+/**
+ * The badges the recap keeps a permanent record of, in the order they are displayed.
+ *
+ * `name` is the fallback only. Every one of these is a *configurable* role name, and what members
+ * actually see on somebody is whatever the server called it — so the render sites substitute the
+ * configured name and fall back to these when a badge has been switched off. History outliving the
+ * setting that made it is the point: turning Bard off should stop new ones being awarded, not erase
+ * the three somebody already won.
+ *
+ * Cave Dweller is absent on purpose and the database comment explains why — it is not a thing
+ * anybody won, and nothing should be counting it.
+ */
+export const RECAP_BADGES = [
+  { key: 'champion', emoji: '🏆', name: 'Champion' },
+  { key: 'bard', emoji: '🎵', name: 'Bard' },
+  { key: 'scribe', emoji: '✍️', name: 'Scribe' },
+];
+
 /** Midnight UTC on the Monday of the week containing `ms`. */
 function startOfWeek(ms) {
   const date = new Date(ms);
