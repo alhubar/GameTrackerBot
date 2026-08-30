@@ -183,7 +183,10 @@ Members with **Manage Server** can also run `/backup` for a copy on demand — b
 same day-stamped name, so it replaces the day's copy rather than adding to the series.
 
 Point `BACKUP_DIR` at a different disk than the database if you can. A backup beside the original does not survive
-losing the drive.
+losing the drive. If you would rather keep the copies where they are, set `BACKUP_MIRROR_DIR` to a second location and
+every copy is written twice — the mirror is created if missing and rotated on the same `BACKUP_KEEP` rule. It is a
+bonus rather than a requirement: a mirror that cannot be reached is logged, and reported by `/backup`, but never fails
+the backup itself.
 
 ## Privacy and opting out
 

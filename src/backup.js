@@ -1,5 +1,5 @@
-import { mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { basename, join } from 'node:path';
 
 /**
  * Nightly rotated copies of the database.
@@ -11,6 +11,10 @@ import { join } from 'node:path';
  * The copy itself goes through `db.backup()` (SQLite's online backup API), not a file copy of the
  * .sqlite/-wal/-shm trio: the bot keeps writing throughout, and a plain copy can catch the
  * checkpoint loop mid-commit and produce a snapshot that is internally inconsistent.
+ *
+ * Rotation alone protects against corruption and mistakes, not against losing the disk, since the
+ * copies default to living beside the database they protect. An optional mirror directory is the
+ * answer to that, and is deliberately allowed to fail without failing the backup.
  */
 
 const PREFIX = 'tracker-';
@@ -48,7 +52,39 @@ export function rotateBackups(dir, keep) {
   return removed;
 }
 
-export async function runBackup(db, dir, now, keep) {
+/**
+ * Copies a finished backup to a second location, and rotates that location on the same rule.
+ *
+ * Deliberately a plain file copy rather than a second `db.backup()`: the source is a completed
+ * snapshot nothing is writing to any more, so there is nothing to catch mid-commit, and a second
+ * online backup pass would re-read the live database and capture a *different* moment under the
+ * same day-stamped name. Written to `.partial` and renamed for the same reason the primary is.
+ *
+ * Throws on failure like anything else — `runBackup` is what makes a failure here soft.
+ */
+export function mirrorBackup(sourcePath, dir, keep) {
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, basename(sourcePath));
+  const partial = path + PARTIAL_SUFFIX;
+  try {
+    copyFileSync(sourcePath, partial);
+    renameSync(partial, path);
+  } catch (error) {
+    rmSync(partial, { force: true });
+    throw error;
+  }
+  return { path, removed: rotateBackups(dir, keep) };
+}
+
+/**
+ * Takes tonight's copy, rotates the series, and — if `mirrorDir` is set — puts a second copy
+ * somewhere else.
+ *
+ * The mirror is a bonus, never a precondition: an unplugged drive or an unmounted share must not
+ * turn a backup that genuinely succeeded into one the caller reports as failed. A mirror failure
+ * comes back as `mirror.error` for the caller to log, and the primary result is unaffected.
+ */
+export async function runBackup(db, dir, now, keep, mirrorDir) {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, backupFileName(now));
   const partial = path + PARTIAL_SUFFIX;
@@ -59,5 +95,11 @@ export async function runBackup(db, dir, now, keep) {
     rmSync(partial, { force: true });
     throw error;
   }
-  return { path, removed: rotateBackups(dir, keep) };
+  const removed = rotateBackups(dir, keep);
+  let mirror = null;
+  if (mirrorDir) {
+    try { mirror = mirrorBackup(path, mirrorDir, keep); }
+    catch (error) { mirror = { error }; }
+  }
+  return { path, removed, mirror };
 }

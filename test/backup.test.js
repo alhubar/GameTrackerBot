@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { backupFileName, isBackupDue, listBackups, rotateBackups, runBackup } from '../src/backup.js';
+import { backupFileName, isBackupDue, listBackups, mirrorBackup, rotateBackups, runBackup } from '../src/backup.js';
 import { tempDatabase, DAY, HOUR, T0 } from './helpers.js';
 
 const withDir = (body) => {
@@ -114,6 +114,80 @@ test('a second backup on the same day replaces it rather than starting a new ser
     cleanup();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a mirror directory gets its own copy of the same file', async () => {
+  const { db, cleanup } = tempDatabase();
+  const dir = mkdtempSync(join(tmpdir(), 'tracker-backup-'));
+  const mirrorDir = join(mkdtempSync(join(tmpdir(), 'tracker-mirror-')), 'nested');
+  try {
+    db.startSession('g1', 'u1', 'Some Game', T0);
+    db.stopSession('g1', 'u1', T0 + HOUR);
+
+    const { mirror } = await runBackup(db, dir, T0, 7, mirrorDir);
+    assert.equal(mirror.path, join(mirrorDir, 'tracker-2026-06-15.sqlite'));
+    assert.deepEqual(mirror.removed, []);
+    assert.equal(existsSync(mirror.path + '.partial'), false);
+
+    // The point of the mirror is that it is a usable database, not just bytes of the right length.
+    const copy = new Database(mirror.path, { readonly: true });
+    assert.equal(copy.prepare('SELECT total_seconds FROM member_stats WHERE user_id = ?').get('u1').total_seconds, 3600);
+    copy.close();
+  } finally {
+    cleanup();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(mirrorDir, { recursive: true, force: true });
+  }
+});
+
+test('no mirror is configured by default', async () => {
+  const { db, cleanup } = tempDatabase();
+  const dir = mkdtempSync(join(tmpdir(), 'tracker-backup-'));
+  try {
+    const { mirror } = await runBackup(db, dir, T0, 7);
+    assert.equal(mirror, null);
+  } finally {
+    cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the mirror rotates on the same rule as the primary', () => {
+  withDir((dir) => {
+    withDir((mirrorDir) => {
+      seed(dir, 'tracker-2026-06-15.sqlite');
+      seed(mirrorDir, 'tracker-2026-06-12.sqlite', 'tracker-2026-06-13.sqlite', 'tracker-2026-06-14.sqlite');
+
+      const { removed } = mirrorBackup(join(dir, 'tracker-2026-06-15.sqlite'), mirrorDir, 2);
+      assert.deepEqual(removed, ['tracker-2026-06-13.sqlite', 'tracker-2026-06-12.sqlite']);
+      assert.deepEqual(listBackups(mirrorDir), ['tracker-2026-06-15.sqlite', 'tracker-2026-06-14.sqlite']);
+    });
+  });
+});
+
+test('an unreachable mirror is reported but does not fail the backup', async () => {
+  const { db, cleanup } = tempDatabase();
+  const dir = mkdtempSync(join(tmpdir(), 'tracker-backup-'));
+  try {
+    // A directory that cannot be created, because a file is sitting where its parent would go.
+    writeFileSync(join(dir, 'blocker'), '');
+    const { path, mirror } = await runBackup(db, dir, T0, 7, join(dir, 'blocker', 'mirror'));
+
+    assert.equal(existsSync(path), true);
+    assert.ok(mirror.error instanceof Error);
+    assert.equal(mirror.path, undefined);
+  } finally {
+    cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a failed mirror copy leaves no partial file behind', () => {
+  withDir((mirrorDir) => {
+    assert.throws(() => mirrorBackup(join(tmpdir(), 'tracker-source-does-not-exist.sqlite'), mirrorDir, 7));
+    assert.deepEqual(listBackups(mirrorDir), []);
+    assert.equal(existsSync(join(mirrorDir, 'tracker-source-does-not-exist.sqlite.partial')), false);
+  });
 });
 
 test('a failed backup leaves no partial file behind', async () => {

@@ -2,7 +2,7 @@ import { Events } from 'discord.js';
 import { db, client } from './runtime.js';
 import {
   DISCORD_TOKEN, GUILD_ID, MAX_SESSION_MS, RECAP_ENABLED, EVENT_REMINDER_STAGES_MINUTES,
-  BACKUP_ENABLED, BACKUP_DIR, BACKUP_KEEP, BACKUP_HOUR_UTC, SOCIAL_ENABLED,
+  BACKUP_ENABLED, BACKUP_DIR, BACKUP_KEEP, BACKUP_HOUR_UTC, BACKUP_MIRROR_DIR, SOCIAL_ENABLED,
   SOCIAL_VOICE_DAILY_CAP_MINUTES, CAVE_DWELLER_ENABLED,
 } from './config.js';
 import { commands } from './commands/index.js';
@@ -246,8 +246,11 @@ if (BACKUP_ENABLED) {
     const now = Date.now();
     if (!isBackupDue(BACKUP_DIR, now, BACKUP_HOUR_UTC)) return;
     try {
-      const { path, removed } = await runBackup(db, BACKUP_DIR, now, BACKUP_KEEP);
+      const { path, removed, mirror } = await runBackup(db, BACKUP_DIR, now, BACKUP_KEEP, BACKUP_MIRROR_DIR);
       console.log(`Database backed up to ${path}${removed.length ? ` (rotated out ${removed.length})` : ''}`);
+      // The copy itself is already safe by here; the mirror failing is worth a line but not a throw.
+      if (mirror?.error) console.error(`Backup mirror to ${BACKUP_MIRROR_DIR} failed:`, mirror.error);
+      else if (mirror) console.log(`Mirrored to ${mirror.path}`);
     } catch (error) { console.error('Backup failed:', error); }
   }, 60 * 60_000).unref();
 }

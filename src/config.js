@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { resolve } from 'node:path';
 import { LONGEST_SESSION_ACHIEVEMENT_MS } from './achievements.js';
 import { RECAP_PERIODS } from './recap.js';
 
@@ -24,6 +25,14 @@ export const BACKUP_DIR = process.env.BACKUP_DIR?.trim() || 'data/backups';
 export const BACKUP_KEEP = Number(process.env.BACKUP_KEEP ?? '7');
 if (!Number.isInteger(BACKUP_KEEP) || BACKUP_KEEP < 1) {
   throw new Error(`BACKUP_KEEP must be a whole number of at least 1 — got "${process.env.BACKUP_KEEP}".`);
+}
+// An optional second home for every nightly copy. BACKUP_DIR defaults to sitting beside the
+// database it protects, so one lost disk takes the original and every rotated copy with it. Point
+// this at other hardware and each copy is written twice, rotated on the same BACKUP_KEEP rule.
+// Unset means no mirror; a mirror that cannot be written is logged and never fails the backup.
+export const BACKUP_MIRROR_DIR = process.env.BACKUP_MIRROR_DIR?.trim() || undefined;
+if (BACKUP_MIRROR_DIR && resolve(BACKUP_MIRROR_DIR) === resolve(BACKUP_DIR)) {
+  throw new Error('BACKUP_MIRROR_DIR must point somewhere other than BACKUP_DIR — a second copy in the same directory is not a second copy.');
 }
 // UTC so the nightly copy lands at the same real moment regardless of where the host is, and so a
 // daylight-saving change can never skip or duplicate a night.
