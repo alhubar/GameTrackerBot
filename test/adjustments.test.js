@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession } from '../src/adjustments.js';
+import { ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession, mergeGames } from '../src/adjustments.js';
 import { tempDatabase, playSession, HOUR, MINUTE, T0 } from './helpers.js';
 
 const G = 'guild-1';
@@ -201,5 +201,186 @@ test('the game picker offers a running session before it has banked any time', (
   withDb((db) => {
     db.startSession(G, U, 'Just Launched', T0);
     assert.deepEqual(db.getMemberGameNames(G, U), ['Just Launched']);
+  });
+});
+
+/**
+ * `/adjust merge` — one game recorded under two names.
+ *
+ * The property everything else rests on: a merge moves rows between game names and never touches
+ * `member_stats`, so no total, rank or standing can move. What it does change is the *number* of
+ * distinct games a member has, which several achievements count.
+ */
+
+const merge = (db, fromName, intoName, extra = {}, now = T0) =>
+  mergeGames(db, { guildId: G, fromName, intoName, actorId: ADMIN, reason: null, ...extra }, now);
+
+test('two names fold into one, carrying time and session count', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'CSGO', T0, 3 * HOUR);
+    playSession(db, G, U, 'CSGO', T0 + 4 * HOUR, 1 * HOUR);
+    playSession(db, G, U, 'Counter-Strike 2', T0 + 6 * HOUR, 2 * HOUR);
+
+    const result = merge(db, 'CSGO', 'Counter-Strike 2');
+
+    assert.equal(db.getGameStatsTotal(G, U, 'Counter-Strike 2'), 6 * 3600);
+    assert.equal(db.getGameSessionCount(G, U, 'Counter-Strike 2'), 3);
+    assert.equal(db.getGameStatsTotal(G, U, 'CSGO'), 0);
+    assert.deepEqual(db.getMemberGameNames(G, U), ['Counter-Strike 2']);
+    assert.equal(result.intoExisted, true);
+    assert.equal(result.intoTotalSeconds, 6 * 3600);
+  });
+});
+
+test('a merge never moves a member total, so no rank can follow it', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'CSGO', T0, 3 * HOUR);
+    playSession(db, G, U, 'Counter-Strike 2', T0 + 4 * HOUR, 2 * HOUR);
+    const before = db.getTotalSeconds(G, U);
+    merge(db, 'CSGO', 'Counter-Strike 2');
+    assert.equal(db.getTotalSeconds(G, U), before);
+    assert.equal(before, 5 * 3600);
+  });
+});
+
+test('the recorded history moves too, not just the totals', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'CSGO', T0, 5 * HOUR);
+    merge(db, 'CSGO', 'Counter-Strike 2');
+    // The server record reads play_sessions, so a half-merge would still name the retired spelling.
+    assert.equal(db.getServerRecords(G, 3600).longestSession.game_name, 'Counter-Strike 2');
+    assert.deepEqual(db.getRecentSessions(G, U).map((row) => row.game_name), ['Counter-Strike 2']);
+  });
+});
+
+test('a session running right now is moved, and banks onto the surviving name', () => {
+  withDb((db) => {
+    db.startSession(G, U, 'CSGO', T0);
+    const result = merge(db, 'CSGO', 'Counter-Strike 2');
+    assert.equal(result.activeMoved, 1);
+    db.checkpointAll(T0 + HOUR);
+    assert.equal(db.getGameStatsTotal(G, U, 'Counter-Strike 2'), 3600);
+    assert.equal(db.getGameStatsTotal(G, U, 'CSGO'), 0);
+  });
+});
+
+test('a member whose only trace is a running session is still counted and logged', () => {
+  withDb((db) => {
+    // No game_stats row exists until the first checkpoint, so this member is invisible to the
+    // aggregates the merge otherwise works from.
+    db.startSession(G, U, 'CSGO', T0);
+    const result = merge(db, 'CSGO', 'Counter-Strike 2');
+    assert.deepEqual(result.members, [{ userId: U, movedSeconds: 0, movedSessionCount: 0 }]);
+    assert.equal(db.getAdjustments(G, U).length, 1);
+  });
+});
+
+test('a name nobody else has is simply renamed', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'Halo: CE', T0, 2 * HOUR);
+    const result = merge(db, 'Halo: CE', 'Halo: Combat Evolved');
+    assert.equal(result.intoExisted, false);
+    assert.equal(db.getGameStatsTotal(G, U, 'Halo: Combat Evolved'), 2 * 3600);
+  });
+});
+
+test('every member holding the old name is moved, not just the one who asked', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'CSGO', T0, 2 * HOUR);
+    playSession(db, G, 'user-2', 'CSGO', T0, 1 * HOUR);
+    playSession(db, G, 'user-2', 'Counter-Strike 2', T0 + 3 * HOUR, 1 * HOUR);
+    const result = merge(db, 'CSGO', 'Counter-Strike 2');
+    assert.equal(result.members.length, 2);
+    assert.equal(db.getGameStatsTotal(G, U, 'Counter-Strike 2'), 2 * 3600);
+    assert.equal(db.getGameStatsTotal(G, 'user-2', 'Counter-Strike 2'), 2 * 3600);
+    assert.equal(result.intoTotalSeconds, 4 * 3600);
+  });
+});
+
+test('the same spelling in another guild is left alone', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'CSGO', T0, 2 * HOUR);
+    playSession(db, 'guild-2', U, 'CSGO', T0, 2 * HOUR);
+    merge(db, 'CSGO', 'Counter-Strike 2');
+    assert.equal(db.getGameStatsTotal('guild-2', U, 'CSGO'), 2 * 3600);
+    assert.equal(db.getGameStatsTotal('guild-2', U, 'Counter-Strike 2'), 0);
+  });
+});
+
+test('a name with nothing under it changes nothing and logs nothing', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'Hades', T0, 1 * HOUR);
+    assert.equal(merge(db, 'Hadez', 'Hades'), null);
+    assert.deepEqual(db.getAdjustments(G, null), []);
+    assert.equal(db.getGameStatsTotal(G, U, 'Hades'), 3600);
+  });
+});
+
+test('merging a name into itself is refused rather than deleting it', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'Hades', T0, 1 * HOUR);
+    assert.equal(merge(db, 'Hades', 'Hades'), null);
+    assert.equal(db.getGameStatsTotal(G, U, 'Hades'), 3600);
+    assert.deepEqual(db.getAdjustments(G, null), []);
+  });
+});
+
+test('one audit row per member, naming both games and moving no time', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'CSGO', T0, 2 * HOUR);
+    playSession(db, G, 'user-2', 'CSGO', T0, 1 * HOUR);
+    merge(db, 'CSGO', 'Counter-Strike 2', { reason: 'Valve renamed it' });
+
+    const rows = db.getAdjustments(G, null);
+    assert.equal(rows.length, 2);
+    for (const row of rows) {
+      assert.equal(row.kind, ADJUSTMENT_KINDS.MERGE);
+      assert.equal(row.game_name, 'CSGO');
+      assert.equal(row.merged_into, 'Counter-Strike 2');
+      // Must stay zero: the column's contract is what was applied to the member's total, so that
+      // replaying it reproduces the totals. A merge applies nothing.
+      assert.equal(row.delta_seconds, 0);
+      assert.equal(row.reason, 'Valve renamed it');
+    }
+    assert.equal(db.getAdjustments(G, U).length, 1);
+  });
+});
+
+test('an earlier correction keeps the name it was made under', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'CSGO', T0, 2 * HOUR);
+    applyTimeAdjustment(db, { guildId: G, userId: U, actorId: ADMIN, gameName: 'CSGO', deltaSeconds: -600 }, T0);
+    merge(db, 'CSGO', 'Counter-Strike 2', {}, T0 + 1000);
+    // The audit log records what was done at the time and is never rewritten.
+    const [, older] = db.getAdjustments(G, U);
+    assert.equal(older.kind, ADJUSTMENT_KINDS.TIME);
+    assert.equal(older.game_name, 'CSGO');
+    assert.equal(older.merged_into, null);
+  });
+});
+
+test('the distinct-game count drops, and unlocked achievements survive it', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'CSGO', T0, 2 * HOUR);
+    playSession(db, G, U, 'Counter-Strike 2', T0 + 3 * HOUR, 2 * HOUR);
+    assert.equal(db.getSubstantialGameCount(G, U, 3600), 2);
+    db.unlockAchievement(G, U, 'collector', T0);
+
+    merge(db, 'CSGO', 'Counter-Strike 2');
+
+    // One game, with the hours of both — which is the whole point, and also why the count falls.
+    assert.equal(db.getSubstantialGameCount(G, U, 3600), 1);
+    assert.equal(db.getGameStatsTotal(G, U, 'Counter-Strike 2'), 4 * 3600);
+    assert.equal(db.hasAchievement(G, U, 'collector'), true);
+  });
+});
+
+test('the guild picker lists every name on record, running sessions included', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'Hades', T0, 2 * HOUR);
+    playSession(db, G, 'user-2', 'Celeste', T0, 1 * HOUR);
+    db.startSession(G, 'user-3', 'Just Launched', T0);
+    playSession(db, 'guild-2', U, 'Elsewhere', T0, 1 * HOUR);
+    assert.deepEqual(db.getGuildGameNames(G), ['Hades', 'Celeste', 'Just Launched']);
   });
 });

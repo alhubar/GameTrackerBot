@@ -16,9 +16,13 @@
  *   follows for retuning — raising a requirement never revokes what someone already has — and the
  *   alternative is a correction quietly deleting a badge somebody was shown earning. Rank roles do
  *   move, because a rank names where you stand now rather than what you once reached.
+ *
+ * A merge is the odd one out on the second rule only in that it has nothing to re-lock: it moves no
+ * time, so no total and no rank can change. What it does change is how many *distinct* games a
+ * member has, which several achievements count — see `mergeGames`.
  */
 
-export const ADJUSTMENT_KINDS = { TIME: 'time', SESSION: 'session' };
+export const ADJUSTMENT_KINDS = { TIME: 'time', SESSION: 'session', MERGE: 'merge' };
 
 /**
  * Adds or removes time on one game for one member.
@@ -54,5 +58,34 @@ export function voidSession(db, { guildId, sessionId, actorId, reason }, now = D
     gameName: result.session.game_name, deltaSeconds: result.appliedSeconds,
     sessionId, reason,
   }, now);
+  return result;
+}
+
+/**
+ * Folds one game name into another for the whole guild, and logs it against every member it moved.
+ *
+ * Returns null when nothing is recorded under `fromName` or the two names are the same — the caller
+ * reports that rather than writing an audit row for a merge that did not happen.
+ *
+ * **One row per affected member**, because that is how the log is read: `/adjust log member:@them`
+ * has to be able to answer why their per-game history looks different from what they remember.
+ * `deltaSeconds` is **0** on every one of them, and must stay 0 — the column's contract is what was
+ * applied to a member's total, so that replaying it reproduces the totals, and a merge applies
+ * nothing. The seconds that moved between names are recoverable from the game rows themselves.
+ *
+ * **Nothing is re-evaluated here.** A merge can newly satisfy a per-game milestone (the whole point
+ * of the issue behind it) and can lower a distinct-game count that is already banked. Both follow
+ * the same rule the other corrections do: what is unlocked stays unlocked, and anything newly
+ * earned lands the next time that member plays, when the evaluators run against the merged rows.
+ */
+export function mergeGames(db, { guildId, fromName, intoName, actorId, reason }, now = Date.now()) {
+  const result = db.mergeGameNames(guildId, fromName, intoName);
+  if (!result) return null;
+  for (const member of result.members) {
+    db.recordAdjustment({
+      guildId, userId: member.userId, actorId, kind: ADJUSTMENT_KINDS.MERGE,
+      gameName: fromName, mergedInto: intoName, deltaSeconds: 0, reason,
+    }, now);
+  }
   return result;
 }

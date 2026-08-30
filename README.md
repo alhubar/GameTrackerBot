@@ -225,11 +225,12 @@ case the default was overridden under **Server Settings → Integrations**.
 
 - **`/adjust time`** — add or remove minutes on one game for one member. A negative number removes.
 - **`/adjust session`** — void one bogus session outright, taking back the time and the session tally it credited.
+- **`/adjust merge`** — fold two spellings of one game into a single name, for everybody at once.
 - **`/adjust log`** — the audit trail, for one member or the whole server.
 
-Both the game and the session are picked from a list rather than typed. Game names arrive as free text from Discord
-presence, exact punctuation and all, so a typed name that is slightly wrong would not error — it would create a *new*
-game on the member's record and leave the wrong one untouched.
+The game, the session and both sides of a merge are picked from a list rather than typed. Game names arrive as free
+text from Discord presence, exact punctuation and all, so a typed name that is slightly wrong would not error — it
+would create a *new* game on the member's record and leave the wrong one untouched.
 
 Corrections cannot drive a total below zero, and a subtraction is capped at what that game actually holds: asking to
 remove two hours from a game with forty minutes on it removes forty, and the reply says so rather than quietly doing
@@ -248,6 +249,24 @@ corrections per server, since a total set by hand is otherwise indistinguishable
 
 Take a `/backup` first if the correction is a large one. Inverting a mistake is one more `/adjust time` with the
 opposite sign, but a backup is the only way back from several corrections in a row.
+
+### Merging two spellings of one game
+
+Games are recorded under whatever name Discord's Rich Presence reported. When a game is renamed upstream —
+Counter-Strike: Global Offensive becoming Counter-Strike 2 is the obvious case — or presence reports a variant
+spelling, one game's history silently splits in two. Over a long history that is not cosmetic: it can cost somebody a
+milestone on a game they have genuinely put hundreds of hours into, and it inflates their distinct-game count.
+
+`/adjust merge` folds one name into the other across the whole server — there is no member option, because a spelling
+is wrong for everybody who has it or for nobody. Time, session counts, recorded history and any session running right
+now all move to the surviving name. If the name you merge into does not exist yet, it is simply a rename.
+
+**No time is created or destroyed**, so no member total, rank or leaderboard position changes. What does change is the
+number of *distinct* games: anyone who had both names now has one fewer, so game counts can read lower afterwards.
+Achievements already unlocked are kept, as with every other correction, and anything the merge newly earns arrives the
+next time that member plays.
+
+It cannot be undone — merging back would not restore the split — so take a `/backup` first if you are unsure.
 
 ## Maintenance
 

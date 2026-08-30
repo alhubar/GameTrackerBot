@@ -56,6 +56,12 @@ export const commands = [
       .addUserOption((option) => option.setName('member').setDescription('Member whose session it is').setRequired(true))
       .addIntegerOption((option) => option.setName('session').setDescription('Session to void (pick from the list)').setRequired(true).setAutocomplete(true))
       .addStringOption((option) => option.setName('reason').setDescription('Why — recorded in the audit log').setMaxLength(200)))
+    // No member option, deliberately: a game name belongs to the server, so a spelling of it is
+    // wrong for everybody who has it or for nobody.
+    .addSubcommand((sub) => sub.setName('merge').setDescription('Fold two spellings of one game into a single name')
+      .addStringOption((option) => option.setName('from').setDescription('Name to retire (pick from the list)').setRequired(true).setAutocomplete(true))
+      .addStringOption((option) => option.setName('into').setDescription('Name to keep — pick one, or type a new one').setRequired(true).setAutocomplete(true))
+      .addStringOption((option) => option.setName('reason').setDescription('Why — recorded in the audit log').setMaxLength(200)))
     .addSubcommand((sub) => sub.setName('log').setDescription('Show recent corrections')
       .addUserOption((option) => option.setName('member').setDescription('Only this member (defaults to the whole server)')))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),

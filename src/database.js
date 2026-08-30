@@ -217,6 +217,14 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   if (!eventColumns.some((column) => column.name === 'message_id')) {
     db.exec('ALTER TABLE events ADD COLUMN message_id TEXT');
   }
+  // The surviving name of a `merge` correction. game_name holds the name that disappeared, so the
+  // pair reads as "X was folded into Y" — and a merge is the one correction whose subject is two
+  // names rather than an amount, which is why it needs a column of its own rather than a string
+  // stuffed into game_name. Null for every other kind.
+  const adjustmentColumns = db.prepare('PRAGMA table_info(stat_adjustments)').all();
+  if (!adjustmentColumns.some((column) => column.name === 'merged_into')) {
+    db.exec('ALTER TABLE stat_adjustments ADD COLUMN merged_into TEXT');
+  }
   db.exec('UPDATE active_sessions SET last_checkpoint_at = started_at WHERE last_checkpoint_at IS NULL');
 
   /**
@@ -295,9 +303,38 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       UNION ALL SELECT game_name, 0 FROM active_sessions WHERE guild_id = ? AND user_id = ?
     ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT ?
   `);
+  // The same picker as above, for the whole guild: a game name belongs to the server, not to one
+  // member, so merging two spellings of it is not a per-member correction.
+  const getGuildGameNamesStmt = db.prepare(`
+    SELECT game_name, MAX(total_seconds) AS total_seconds FROM (
+      SELECT game_name, SUM(total_seconds) AS total_seconds FROM game_stats WHERE guild_id = ? GROUP BY game_name
+      UNION ALL SELECT DISTINCT game_name, 0 FROM active_sessions WHERE guild_id = ?
+    ) GROUP BY game_name ORDER BY total_seconds DESC, game_name LIMIT ?
+  `);
+  // Everyone with anything at all under a name, including a member whose only trace of it is the
+  // session running right now — they have no game_stats row until its first checkpoint.
+  const getGameHoldersStmt = db.prepare(`
+    SELECT user_id, MAX(total_seconds) AS total_seconds, MAX(session_count) AS session_count FROM (
+      SELECT user_id, total_seconds, session_count FROM game_stats WHERE guild_id = ? AND game_name = ?
+      UNION ALL SELECT DISTINCT user_id, 0, 0 FROM play_sessions WHERE guild_id = ? AND game_name = ?
+      UNION ALL SELECT user_id, 0, 0 FROM active_sessions WHERE guild_id = ? AND game_name = ?
+    ) GROUP BY user_id ORDER BY total_seconds DESC
+  `);
+  const foldGameStatsStmt = db.prepare(`
+    INSERT INTO game_stats (guild_id, user_id, game_name, total_seconds, session_count) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(guild_id, user_id, game_name) DO UPDATE SET
+      total_seconds = total_seconds + excluded.total_seconds,
+      session_count = session_count + excluded.session_count
+  `);
+  const removeGameStatsByNameStmt = db.prepare('DELETE FROM game_stats WHERE guild_id = ? AND game_name = ?');
+  const renamePlaySessionsStmt = db.prepare('UPDATE play_sessions SET game_name = ? WHERE guild_id = ? AND game_name = ?');
+  const renameActiveSessionsStmt = db.prepare('UPDATE active_sessions SET game_name = ? WHERE guild_id = ? AND game_name = ?');
+  const countGameStatsRowsStmt = db.prepare('SELECT COUNT(*) AS n FROM game_stats WHERE guild_id = ? AND game_name = ?');
+  const sumGameSecondsStmt = db.prepare(
+    'SELECT COALESCE(SUM(total_seconds), 0) AS total_seconds FROM game_stats WHERE guild_id = ? AND game_name = ?');
   const recordAdjustmentStmt = db.prepare(`
-    INSERT INTO stat_adjustments (guild_id, user_id, actor_id, kind, game_name, delta_seconds, session_id, reason, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO stat_adjustments (guild_id, user_id, actor_id, kind, game_name, merged_into, delta_seconds, session_id, reason, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const getAdjustmentsStmt = db.prepare(`
     SELECT * FROM stat_adjustments WHERE guild_id = ? AND (? IS NULL OR user_id = ?)
@@ -1026,6 +1063,8 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     /** Game names this member has on record, most-played first — the source for /adjust's picker. */
     getMemberGameNames: (guildId, userId, limit = 25) =>
       getMemberGameNamesStmt.all(guildId, userId, guildId, userId, limit).map((row) => row.game_name),
+    getGuildGameNames: (guildId, limit = 25) =>
+      getGuildGameNamesStmt.all(guildId, guildId, limit).map((row) => row.game_name),
     getRecentSessions: (guildId, userId, limit = 25) => getRecentSessionsStmt.all(guildId, userId, limit),
 
     /**
@@ -1050,6 +1089,60 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       setMemberTotal.run(guildId, row.user_id, totalAfter);
       removePlaySession.run(sessionId);
       return { session: row, appliedSeconds: applied, totalBefore, totalAfter, gameAfter };
+    }),
+
+    /**
+     * Folds every trace of one game name into another, for the whole guild.
+     *
+     * `game_stats` is keyed on whatever string Rich Presence reported, so an upstream rename or a
+     * variant spelling splits one game's history across two rows — which costs the per-game
+     * milestones on a game genuinely played, and inflates the distinct-game count that feeds the
+     * collection ladder and the server library tiers.
+     *
+     * **No time is created or destroyed.** `member_stats` is not touched at all: this moves rows
+     * between game names, so every member's total, rank and standing are exactly what they were.
+     * That is what makes it safe to run guild-wide without a per-member clamp — unlike
+     * `adjustPlaytime` and `deletePlaySession`, there is no amount here to get wrong.
+     *
+     * **`play_sessions` and `active_sessions` move too, not just the aggregates.** Leaving the
+     * history behind would be a half-merge: the longest-session record, the day-count queries and
+     * the session picker all read `play_sessions.game_name`, so the dead name would keep surfacing
+     * in exactly the places the merge was meant to clean up, and the game would still count twice
+     * in "games played today". The cost is that first-and-last-played for the surviving name shift
+     * to cover the older history, which is what those dates now honestly describe.
+     *
+     * Deliberately **not** rewritten: `events.game_name`, which is text a member typed for a game
+     * night rather than a tracked stat, and `stat_adjustments`, which records what was done at the
+     * time and is never edited.
+     *
+     * Returns null when nothing is recorded under `fromName`, or when the two names are equal.
+     */
+    mergeGameNames: db.transaction((guildId, fromName, intoName) => {
+      if (fromName === intoName) return null;
+      const holders = getGameHoldersStmt.all(guildId, fromName, guildId, fromName, guildId, fromName);
+      if (!holders.length) return null;
+      const intoExisted = countGameStatsRowsStmt.get(guildId, intoName).n > 0;
+      for (const holder of holders) {
+        if (holder.total_seconds || holder.session_count) {
+          foldGameStatsStmt.run(guildId, holder.user_id, intoName, holder.total_seconds, holder.session_count);
+        }
+      }
+      removeGameStatsByNameStmt.run(guildId, fromName);
+      const sessionsMoved = renamePlaySessionsStmt.run(intoName, guildId, fromName).changes;
+      const activeMoved = renameActiveSessionsStmt.run(intoName, guildId, fromName).changes;
+      return {
+        fromName,
+        intoName,
+        intoExisted,
+        sessionsMoved,
+        activeMoved,
+        members: holders.map((holder) => ({
+          userId: holder.user_id,
+          movedSeconds: holder.total_seconds,
+          movedSessionCount: holder.session_count,
+        })),
+        intoTotalSeconds: sumGameSecondsStmt.get(guildId, intoName).total_seconds,
+      };
     }),
 
     // ---- Social minutes ----------------------------------------------------------------------
@@ -1263,8 +1356,10 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       return removed;
     }),
 
-    recordAdjustment: ({ guildId, userId, actorId, kind, gameName = null, deltaSeconds, sessionId = null, reason = null }, now = Date.now()) =>
-      recordAdjustmentStmt.run(guildId, userId, actorId, kind, gameName, deltaSeconds, sessionId, reason, now).lastInsertRowid,
+    recordAdjustment: ({
+      guildId, userId, actorId, kind, gameName = null, mergedInto = null, deltaSeconds, sessionId = null, reason = null,
+    }, now = Date.now()) =>
+      recordAdjustmentStmt.run(guildId, userId, actorId, kind, gameName, mergedInto, deltaSeconds, sessionId, reason, now).lastInsertRowid,
     /** `userId` of null returns the whole guild's corrections rather than one member's. */
     getAdjustments: (guildId, userId = null, limit = 10) => getAdjustmentsStmt.all(guildId, userId, userId, limit),
 

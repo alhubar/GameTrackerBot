@@ -3,7 +3,7 @@ import { db } from '../runtime.js';
 import { CARD_ACCENT_COLOR } from '../config.js';
 import { RANKS, formatPlayTime, rankForSeconds } from '../ranks.js';
 import { reconcileRank } from '../tracking.js';
-import { ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession } from '../adjustments.js';
+import { ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession, mergeGames } from '../adjustments.js';
 
 /**
  * `/adjust` — the admin escape hatch for stats that do not match reality.
@@ -139,6 +139,78 @@ async function handleSession(interaction) {
   });
 }
 
+/**
+ * `/adjust merge` — the fix for one game recorded under two names.
+ *
+ * Guild-wide and takes no member, because a spelling is wrong for everybody who has it. Nothing
+ * here can change a total or a rank: the time moves between game names and `member_stats` is never
+ * touched, which is why this needs none of the clamping the other two subcommands live by.
+ */
+async function handleMerge(interaction) {
+  const fromName = interaction.options.getString('from', true);
+  // `into` is trimmed and `from` deliberately is not. `from` comes from the picker and has to match
+  // a stored name exactly — and a stray trailing space is precisely the kind of variant spelling
+  // this command exists to clean up, so trimming it would make that case unmergeable. `into` may be
+  // typed, where surrounding whitespace is never what anybody meant.
+  const intoName = interaction.options.getString('into', true).trim();
+  const reason = interaction.options.getString('reason');
+
+  if (!intoName) {
+    await interaction.editReply('`into` needs a name to keep.');
+    return;
+  }
+  if (fromName === intoName) {
+    await interaction.editReply('Both names are the same, so there is nothing to merge.');
+    return;
+  }
+
+  const result = mergeGames(db, {
+    guildId: interaction.guild.id,
+    fromName,
+    intoName,
+    actorId: interaction.user.id,
+    reason,
+  });
+
+  if (!result) {
+    await interaction.editReply(
+      `Nothing is recorded under **${fromName}** in this server, so there was nothing to merge. `
+      + 'Nothing was changed or logged — pick the name from the list rather than typing it.',
+    );
+    return;
+  }
+
+  const movedSeconds = result.members.reduce((total, member) => total + member.movedSeconds, 0);
+  const memberCount = result.members.length;
+  const lines = [
+    `**${fromName}** → **${intoName}**`,
+    `${memberCount} ${memberCount === 1 ? 'member' : 'members'} affected · `
+      + `**${formatPlayTime(movedSeconds)}** moved · ${result.sessionsMoved} recorded `
+      + `${result.sessionsMoved === 1 ? 'session' : 'sessions'} renamed.`,
+    result.intoExisted
+      ? `**${intoName}** now: ${formatPlayTime(result.intoTotalSeconds)} across the server.`
+      : `**${intoName}** held nothing before, so this was a rename. It now has `
+        + `${formatPlayTime(result.intoTotalSeconds)} across the server.`,
+  ];
+  if (result.activeMoved) {
+    lines.push(`▶️ ${result.activeMoved} ${result.activeMoved === 1 ? 'session is' : 'sessions are'} running `
+      + 'under that name right now and moved too, so the time still on the clock lands on the new name.');
+  }
+  lines.push('No totals or ranks changed — a merge moves time between names rather than adding or removing any.');
+  // Said out loud because it is the one number members can see going *down* afterwards, and a count
+  // that drops with no explanation reads as lost data.
+  lines.push('Anyone who had both names now has one fewer distinct game, so game counts and the '
+    + `collection tiers can read lower. ${ACHIEVEMENT_NOTE}`);
+  if (reason) lines.push(`Reason: ${reason}`);
+
+  const embed = new EmbedBuilder()
+    .setColor(CARD_ACCENT_COLOR)
+    .setTitle('🔀 Games merged')
+    .setDescription(lines.join('\n'))
+    .setFooter({ text: 'Merging back would not restore the split — this cannot be undone.' });
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleLog(interaction) {
   const user = interaction.options.getUser('member');
   const rows = db.getAdjustments(interaction.guild.id, user?.id ?? null, LOG_LIMIT);
@@ -151,12 +223,14 @@ async function handleLog(interaction) {
   }
 
   const lines = rows.map((row) => {
-    const what = row.kind === ADJUSTMENT_KINDS.SESSION
-      ? `voided session \`#${row.session_id}\``
-      : 'adjusted';
     const target = user ? '' : ` <@${row.user_id}>`;
-    const parts = [`<t:${Math.floor(row.created_at / 1000)}:f> — <@${row.actor_id}> ${what}${target}`
-      + ` **${signed(row.delta_seconds)}** on **${row.game_name}**`];
+    // A merge moved no time, so the signed amount every other kind leads with would read as a
+    // correction of zero. It names the two games instead, which is what it actually did.
+    const what = row.kind === ADJUSTMENT_KINDS.MERGE
+      ? `folded **${row.game_name}** into **${row.merged_into}**${target ? ` for${target}` : ''}`
+      : `${row.kind === ADJUSTMENT_KINDS.SESSION ? `voided session \`#${row.session_id}\`` : 'adjusted'}${target}`
+        + ` **${signed(row.delta_seconds)}** on **${row.game_name}**`;
+    const parts = [`<t:${Math.floor(row.created_at / 1000)}:f> — <@${row.actor_id}> ${what}`];
     if (row.reason) parts.push(`  ↳ ${row.reason}`);
     return parts.join('\n');
   });
@@ -169,7 +243,7 @@ async function handleLog(interaction) {
   await interaction.editReply({ embeds: [embed] });
 }
 
-const SUBCOMMANDS = { time: handleTime, session: handleSession, log: handleLog };
+const SUBCOMMANDS = { time: handleTime, session: handleSession, merge: handleMerge, log: handleLog };
 
 export async function handleAdjust(interaction) {
   // Discord hides the command from non-admins, but that default is overridable per-command under
@@ -199,6 +273,15 @@ export async function handleAdjustAutocomplete(interaction) {
       return;
     }
     const focused = interaction.options.getFocused(true);
+    // `merge` takes no member, so both its pickers list what the whole guild has on record.
+    if (interaction.options.getSubcommand() === 'merge') {
+      const wanted = String(focused.value ?? '').toLowerCase();
+      await interaction.respond(db.getGuildGameNames(interaction.guild.id, CHOICE_LIMIT * 2)
+        .filter((name) => name.toLowerCase().includes(wanted))
+        .slice(0, CHOICE_LIMIT)
+        .map((name) => ({ name: name.slice(0, CHOICE_NAME_MAX), value: name })));
+      return;
+    }
     // `getUser` does NOT work here and never will: an autocomplete payload carries no `resolved`
     // block, so discord.js builds this resolver from the raw options and `option.user` is always
     // undefined — getUser would return null on every keystroke and leave both pickers permanently

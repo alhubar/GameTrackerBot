@@ -321,6 +321,13 @@ check('recorded corrections', ['stat_adjustments'],
       `guild ${r.guild_id}: ${plural(r.n, 'correction')}, net ${r.net < 0 ? '−' : '+'}${hours(Math.abs(r.net))}`).join('; '), rows);
   });
 
+check('merges that name no surviving game', ['stat_adjustments.merged_into'],
+  // A merge row is the only record that one game name was folded into another, and it is useless
+  // without both halves. delta_seconds is deliberately 0 on these, so nothing else would notice.
+  `SELECT id, guild_id, game_name FROM stat_adjustments
+     WHERE kind = 'merge' AND (merged_into IS NULL OR merged_into = '')`,
+  expectFalsy('ERROR', 'none', (r) => `${plural(r.length, 'merge')} logged with no destination name`));
+
 check('voided sessions that are still present', ['stat_adjustments', 'play_sessions'],
   // play_sessions ids come from an AUTOINCREMENT column and are never reused, so a logged void
   // whose session row still exists means the delete half of that transaction did not stick.
