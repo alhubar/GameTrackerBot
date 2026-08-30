@@ -7,7 +7,7 @@ import {
   SCRIBE_ROLE, SCRIBE_ROLE_ICON, SCRIBE_MIN_MINUTES,
   CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE, CAVE_DWELLER_ROLE_ICON, CAVE_DWELLER_GRACE_MS,
 } from './config.js';
-import { achievementById } from './achievements.js';
+import { achievementById, evaluateRecapBadge } from './achievements.js';
 import { evaluateServerAchievements } from './serverAchievements.js';
 import {
   buildAchievementEmbed, buildServerAchievementEmbed, buildRecapEmbed, buildNoWinnerRecapEmbed,
@@ -187,18 +187,27 @@ async function settleSocialBadges(guild, recap, championId) {
  * the roles were handed over regardless, and a badge worn but never recorded is a worse outcome
  * than one recorded but never posted. An unclaimed badge writes nothing — there is no holder to
  * name, and a row saying so would have to invent a member id.
+ *
+ * Taking a badge for the first time is also an achievement, evaluated here because this is the one
+ * place that knows a badge changed hands. It is announced the way every other achievement is, ping
+ * included — the recap itself deliberately pings nobody, but that rule is about a summary of things
+ * that happened, and this is a thing the member did.
  */
-function recordRecapWinners(guild, recap, awards, now) {
+async function recordRecapWinners(guild, recap, awards, now) {
   const periodKey = recap.range.key;
-  const record = (badge, userId, metricSeconds) => {
+  const record = async (badge, userId, metricSeconds) => {
     if (!userId) return;
     db.recordRecapWinner({ guildId: guild.id, periodKey, badge, userId, metricSeconds }, now);
+    const unlocked = evaluateRecapBadge(db, guild.id, userId, badge, now);
+    if (!unlocked.length) return;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (member) await announceAchievements(member, unlocked).catch(console.error);
   };
-  if (recap.winner) record('champion', recap.winner.userId, recap.winner.totalSeconds);
+  if (recap.winner) await record('champion', recap.winner.userId, recap.winner.totalSeconds);
   // The social boards are counted in minutes; the column is seconds for every badge, so they are
   // multiplied out here rather than leaving one row in a different unit from its neighbours.
-  record('bard', awards?.bard?.user_id, (awards?.bard?.voice_minutes ?? 0) * 60);
-  record('scribe', awards?.scribe?.user_id, (awards?.scribe?.text_minutes ?? 0) * 60);
+  await record('bard', awards?.bard?.user_id, (awards?.bard?.voice_minutes ?? 0) * 60);
+  await record('scribe', awards?.scribe?.user_id, (awards?.scribe?.text_minutes ?? 0) * 60);
 }
 
 /**
@@ -292,7 +301,7 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
     }
     // No champion, but the talking badges are decided independently and may well have been given
     // out — a period nobody played is exactly the sort where they are the only thing that happened.
-    recordRecapWinners(guild, recap, social?.awards, now);
+    await recordRecapWinners(guild, recap, social?.awards, now);
     markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
     return recap;
   }
@@ -323,7 +332,7 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
     await channel.send({ embeds: [embed, socialEmbed].filter(Boolean) })
       .catch((error) => console.error('Could not post the recap:', error));
   }
-  recordRecapWinners(guild, recap, social?.awards, now);
+  await recordRecapWinners(guild, recap, social?.awards, now);
   markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
   return recap;
 }

@@ -22,6 +22,20 @@ import { rankForSeconds } from './ranks.js';
  * against the rest of this ladder — a streak of N is also N distinct days, so two thresholds that
  * share a value would fire together and read as a duplicate.
  */
+/**
+ * Whether the recap runs weekly or monthly, read straight from the environment.
+ *
+ * NOT from config.js, which cannot be imported here: config.js imports *this* module for
+ * LONGEST_SESSION_ACHIEVEMENT_MS, so reaching back for RECAP_PERIOD would close a cycle. ranks.js
+ * and serverAchievements.js read their own settings the same way for the same reason.
+ *
+ * Frozen at import, like theirs, so a test wanting the other wording has to set RECAP_PERIOD before
+ * importing this module. Anything unrecognised falls back to 'week' rather than throwing — config.js
+ * is what refuses to start on a bad value, and it has already run before any of this is rendered.
+ */
+const RECAP_PERIOD_NOUN = process.env.RECAP_PERIOD?.trim().toLowerCase() === 'month' ? 'month' : 'week';
+const RECAP_PERIOD_TITLE = RECAP_PERIOD_NOUN === 'month' ? 'Month' : 'Week';
+
 export const ACHIEVEMENTS = [
   // Collection — how many different games you've put real time into, all time.
   { id: 'first_steps', emoji: '🐣', name: 'First Steps', description: 'Play your first tracked game.' },
@@ -81,6 +95,20 @@ export const ACHIEVEMENTS = [
 
   // Discovery.
   { id: 'trailblazer', emoji: '🧭', name: 'Trailblazer', description: 'Be the first to play a game the server has never seen before.' },
+
+  // Recap badges — the first time each weekly title is yours. There is deliberately no Cave
+  // Dweller entry and there will not be one: it is not something anybody won, and an unlock is
+  // permanent, so it would outlive by years a badge that comes off the moment its holder turns up.
+  //
+  // These three name the period out loud, unlike everything above them, so they are built from
+  // RECAP_PERIOD rather than written flat — a monthly server reads "Gamer of the Month" and "a
+  // month of", not stale weekly wording.
+  //
+  // "Badge", never "rank": this bot has a real rank ladder and these are not on it. Calling a badge
+  // a rank in text members read would make two different things sound like one.
+  { id: 'crowned', emoji: '👑', name: 'Crowned', description: `Win the Gamer of the ${RECAP_PERIOD_TITLE} badge. Everybody else clearly was not trying.` },
+  { id: 'tavern_bard', emoji: '🎵', name: 'Tavern Bard', description: `Be the ${RECAP_PERIOD_NOUN}’s biggest yapper and take the Bard badge.` },
+  { id: 'court_scribe', emoji: '✍️', name: 'Court Scribe', description: `Take the Scribe badge for a ${RECAP_PERIOD_NOUN} of never letting the chat go quiet.` },
 ];
 
 const ACHIEVEMENT_BY_ID = new Map(ACHIEVEMENTS.map((achievement) => [achievement.id, achievement]));
@@ -402,6 +430,35 @@ export function evaluateOngoingSession(db, guildId, userId, gameName, startedAt,
  * worth telling about someone who was actually here. Without this, anyone who opened one game once
  * and never came back would collect it a fortnight later.
  */
+/**
+ * Which achievement each recap badge unlocks, keyed on the badge as the recap records it.
+ *
+ * A badge with no entry here unlocks nothing, which is what keeps Cave Dweller out with no special
+ * case to remember — and would do the same for any badge added later that should not be an award.
+ */
+const RECAP_BADGE_ACHIEVEMENTS = {
+  champion: 'crowned',
+  bard: 'tavern_bard',
+  scribe: 'court_scribe',
+};
+
+/**
+ * The first time a recap badge is yours.
+ *
+ * Evaluated where the badge is recorded rather than from a periodic sweep, because winning one is
+ * an event with an exact moment, and that moment is the same transaction that writes it down.
+ *
+ * Nothing is backdated. A member holding badges from before this shipped unlocks on their next win,
+ * which is how every achievement here has always started counting — and the alternative would fire
+ * a burst of announcements for periods that finished weeks ago.
+ */
+export function evaluateRecapBadge(db, guildId, userId, badge, now) {
+  const unlocked = [];
+  const achievementId = RECAP_BADGE_ACHIEVEMENTS[badge];
+  if (achievementId) tryUnlock(db, guildId, userId, achievementId, now, unlocked);
+  return unlocked;
+}
+
 export function evaluateTouchGrass(db, guildId, now, cutoffDays = 14) {
   const inactive = db.getInactivePlayers(guildId, now - cutoffDays * DAY);
   const results = [];

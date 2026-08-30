@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   ACHIEVEMENTS, achievementById, getUnlockedAchievements, currentStreak, DUO_DAYS_NEEDED,
   evaluateSessionStart, evaluateSessionEnd, evaluateOngoingSession, evaluateSocialTiers,
-  evaluateDuoDays, evaluateTouchGrass,
+  evaluateDuoDays, evaluateTouchGrass, evaluateRecapBadge,
 } from '../src/achievements.js';
 import { RANK_HOURS } from '../src/ranks.js';
 import { tempDatabase, playSession, SECOND, HOUR, MINUTE, DAY, T0 } from './helpers.js';
@@ -707,5 +707,45 @@ describe('idempotency', () => {
     assert.ok(first.includes('first_steps'));
     const second = evaluateSessionStart(db, GUILD, USER, 'PEAK', T0);
     assert.equal(second.length, 0);
+  });
+});
+
+describe('recap badge achievements', () => {
+  test('each badge the recap records unlocks its own achievement', () => {
+    assert.deepEqual(evaluateRecapBadge(db, GUILD, USER, 'champion', T0), ['crowned']);
+    assert.deepEqual(evaluateRecapBadge(db, GUILD, 'user-2', 'bard', T0), ['tavern_bard']);
+    assert.deepEqual(evaluateRecapBadge(db, GUILD, 'user-3', 'scribe', T0), ['court_scribe']);
+  });
+
+  test('one badge never unlocks another', () => {
+    evaluateRecapBadge(db, GUILD, USER, 'bard', T0);
+    const ids = getUnlockedAchievements(db, GUILD, USER).map((row) => row.achievement_id);
+    assert.deepEqual(ids, ['tavern_bard']);
+  });
+
+  test('Cave Dweller unlocks nothing — it is not something anybody won', () => {
+    assert.deepEqual(evaluateRecapBadge(db, GUILD, USER, 'cave_dweller', T0), []);
+    assert.deepEqual(getUnlockedAchievements(db, GUILD, USER), []);
+  });
+
+  test('an unrecognised badge unlocks nothing rather than throwing', () => {
+    assert.deepEqual(evaluateRecapBadge(db, GUILD, USER, 'jester', T0), []);
+  });
+
+  test('winning the same badge again awards nothing the second time', () => {
+    assert.deepEqual(evaluateRecapBadge(db, GUILD, USER, 'champion', T0), ['crowned']);
+    assert.deepEqual(evaluateRecapBadge(db, GUILD, USER, 'champion', T0 + DAY * 7), []);
+  });
+
+  test('a member can hold all three over time', () => {
+    for (const badge of ['champion', 'bard', 'scribe']) evaluateRecapBadge(db, GUILD, USER, badge, T0);
+    const ids = getUnlockedAchievements(db, GUILD, USER).map((row) => row.achievement_id).sort();
+    assert.deepEqual(ids, ['court_scribe', 'crowned', 'tavern_bard']);
+  });
+
+  test('the three are in the catalogue and carry the badge emoji members already see', () => {
+    assert.equal(achievementById('crowned').name, 'Crowned');
+    assert.equal(achievementById('tavern_bard').emoji, '🎵');
+    assert.equal(achievementById('court_scribe').emoji, '✍️');
   });
 });
