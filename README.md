@@ -62,7 +62,7 @@ The leaderboard shows each player's rank, server nickname, and compact play time
 
 Members who leave the server drop off the leaderboard and off `/server`'s most-active list, but **nothing of theirs is deleted**. Leaving a Discord server is often accidental, so their hours, rank and achievements are kept exactly as they were — rejoin and they reappear at whatever position their playtime earns, with nothing to restore. The rankings are about who is here now; the history is not. Their time does still count toward the server's total gaming time and its server achievements, which are the server's own record rather than a roster.
 
-`/info` shows the active rank list with matching colored-square emojis. New roles receive a default white, green, blue, yellow, orange, red, or purple color; colors you later set in Discord are preserved when you run `/setup` again.
+`/info` is the bot's front door: what it tracks, the active rank list with matching colored-square emojis and a marker on the rank you currently hold, how many weekly badges are handed out, and the commands every member can run. It deliberately shows no hours against the ranks and never lists achievements. New rank roles receive a default white, green, blue, yellow, orange, red, or purple color; colors you later set in Discord are preserved when you run `/setup` again.
 
 ## Statistics and history
 
@@ -100,7 +100,7 @@ Achievement unlocks (personal and server-wide) post as embeds now instead of pla
 
 ## Gamer of the Week
 
-Once a period ends, the bot posts a recap of it on its next hourly check: who played the most, how long, their most-played game, the achievements they earned, and the runners-up. The winner is pinged and their avatar is used as the card's picture.
+Once a period ends, the bot posts a recap of it on its next hourly check: who played the most, how long, their most-played game, and the achievements they earned. Their avatar is used as the card's picture. Nobody is pinged — an achievement is a thing you did and pings accordingly, while a recap is a thing that happened. There are no runners-up on the card either; it is about the member who won it, and `/leaderboard` is there for the standings.
 
 `RECAP_PERIOD` is `week` (Monday to Sunday, UTC) or `month`. Weekly is the default so the winner's badge keeps circulating rather than parking on one person for four weeks. `RECAP_CHANNEL` picks the channel (falling back to `ACHIEVEMENT_CHANNEL`), and `RECAP_ENABLED=false` turns it off.
 
@@ -113,6 +113,17 @@ The winner also receives a role — `Champion of the Realm` by default — which
 Each period is announced exactly once — the period is recorded after posting, so restarting the bot part-way through cannot repost it. That includes the unclaimed weeks, so they are announced once and not repeated.
 
 Setting `RECAP_PERIOD=week` on a quiet server is the quickest way to see one, since the next Monday will produce a recap either way — with a winner if anyone cleared `RECAP_MIN_HOURS`, and the unclaimed card if not.
+
+**Every badge is remembered.** The role moves on when the next period lands, so the result used to
+vanish with it; each period's winners are now recorded permanently. From a member's second win
+onward the recap card says which one it is (“their 3rd time taking the title”), and `/server` and the
+`/stats` card's Server tab gain a **Hall of Fame** ranking whoever has collected the most, with a
+breakdown of which badges they hold. Champion, Bard and Scribe are counted; Cave Dweller is not —
+it is not a badge anybody wins, and it comes off the moment its holder turns up, so a permanent
+tally of it would outlive the thing it described. Opted-out members are hidden from the Hall of
+Fame, as they are from every ranking, while members who have left the server are kept and shown as
+*Former member*, since it records what happened rather than who is still here. Nothing is
+backdated: the record begins at the first recap after this version is deployed.
 
 ## Talking and voice badges
 
