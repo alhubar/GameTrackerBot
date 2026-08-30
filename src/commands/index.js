@@ -29,7 +29,7 @@ export const commands = [
   new SlashCommandBuilder().setName('stats').setDescription('Show an interactive gaming profile card')
     .addUserOption((option) => option.setName('member').setDescription('Member to look up (defaults to you)')),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Show the top tracked players'),
-  new SlashCommandBuilder().setName('info').setDescription('Show the server’s game tracker rank progression'),
+  new SlashCommandBuilder().setName('info').setDescription('What this bot does, the ranks, and everything you can run'),
   new SlashCommandBuilder().setName('server').setDescription('Show this server’s gaming statistics'),
   new SlashCommandBuilder().setName('changes').setDescription('Post the configured game tracker update')
     .addBooleanOption((option) => option.setName('force').setDescription('Post the latest release even if it was announced already'))
