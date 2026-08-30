@@ -270,3 +270,47 @@ describe('announcing once', () => {
     assert.equal(isRecapDue(db, 'guild-2', AUGUST, 'month'), true);
   });
 });
+
+describe('the posting hour', () => {
+  // Monday 00:00 UTC is the boundary; the week being recapped is the one that just ended.
+  const MONDAY_MIDNIGHT = Date.parse('2026-08-17T00:00:00Z');
+  const at = (iso) => Date.parse(iso);
+
+  test('hour 0 posts the moment the period turns over, as it always did', () => {
+    assert.equal(isRecapDue(db, GUILD, MONDAY_MIDNIGHT, 'week', 0), true);
+  });
+
+  test('a later hour holds the post back until it arrives', () => {
+    assert.equal(isRecapDue(db, GUILD, MONDAY_MIDNIGHT, 'week', 18), false, 'midnight is too early');
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-17T17:59:00Z'), 'week', 18), false, 'a minute short');
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-17T18:00:00Z'), 'week', 18), true, 'on the hour');
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-17T18:04:00Z'), 'week', 18), true, 'just after');
+  });
+
+  test('each period is gated afresh from its own boundary', () => {
+    // The week ending Monday the 17th, posted on time.
+    markRecapAnnounced(db, GUILD, at('2026-08-17T18:00:00Z'), 'week');
+    // The next one ends Monday the 24th and waits for 18:00 that day rather than inheriting
+    // the fact that the previous week's hour has long gone.
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-24T09:00:00Z'), 'week', 18), false);
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-24T18:00:00Z'), 'week', 18), true);
+  });
+
+  test('a missed hour posts late rather than being skipped', () => {
+    // The bot was down all Monday and comes back on Tuesday.
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-18T09:00:00Z'), 'week', 18), true);
+  });
+
+  test('holding the post back never posts it twice', () => {
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-17T18:00:00Z'), 'week', 18), true);
+    markRecapAnnounced(db, GUILD, at('2026-08-17T18:00:00Z'), 'week');
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-17T18:05:00Z'), 'week', 18), false);
+    assert.equal(isRecapDue(db, GUILD, at('2026-08-17T23:00:00Z'), 'week', 18), false);
+  });
+
+  test('the same gate applies to a monthly recap', () => {
+    // September opens at 00:00 UTC on the 1st; August's recap waits for hour 18 that day.
+    assert.equal(isRecapDue(db, GUILD, at('2026-09-01T06:00:00Z'), 'month', 18), false);
+    assert.equal(isRecapDue(db, GUILD, at('2026-09-01T18:00:00Z'), 'month', 18), true);
+  });
+});

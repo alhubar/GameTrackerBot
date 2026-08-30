@@ -134,8 +134,15 @@ setInterval(async () => {
   }
 }, 60_000).unref();
 
-// Post the recap once the week (or month) turns over. Hourly is plenty for either boundary, and
-// announceRecap records the period either way so this can't double-post across a restart.
+// Post the recap once the week (or month) turns over, and RECAP_HOUR_UTC has arrived with it.
+//
+// Every five minutes rather than hourly, because the whole point of RECAP_HOUR_UTC is landing at a
+// time somebody chose: setInterval counts from process start, not from the top of the hour, so an
+// hourly tick would scatter the post anywhere across the hour after the target depending on when
+// the bot was last restarted. The check itself is one pure date calculation and one indexed read
+// per guild before announceRecap returns, so the extra ticks cost nothing.
+//
+// announceRecap records the period either way, so this cannot double-post across a restart.
 if (RECAP_ENABLED) {
   setInterval(async () => {
     for (const guild of client.guilds.cache.values()) {
@@ -150,7 +157,7 @@ if (RECAP_ENABLED) {
         await syncGuildRanks(guild).catch((error) => console.error('Rank sweep failed:', error));
       }
     }
-  }, 60 * 60_000).unref();
+  }, 5 * 60_000).unref();
 }
 
 // Award Touch Grass to members who have gone quiet; this can't be triggered by a presence event since it's about absence.

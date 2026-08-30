@@ -149,9 +149,23 @@ export function buildRecap(db, guildId, now, { period = 'week', podiumSize = 3, 
 /**
  * True when the last completed period has not been posted yet for this guild.
  * The stored key is the last period announced, so a restart part-way through can't repost it.
+ *
+ * `hourUtc` holds the post back until that hour of the day the period ended on. A week ends at
+ * Monday 00:00 UTC, so 18 posts it Monday 18:00 UTC — a recap that lands at half past midnight is
+ * read by nobody. It is measured from the period boundary rather than from a wall clock, so it
+ * needs no calendar arithmetic of its own and behaves identically for weeks and months.
+ *
+ * Zero is the default and means "as soon as the period turns over", which is what this did before
+ * the setting existed.
+ *
+ * A period whose hour was missed entirely — the bot was down all day — is still posted late rather
+ * than skipped, because the gate only asks whether enough of the day has passed, never whether the
+ * exact moment went by.
  */
-export function isRecapDue(db, guildId, now, period = 'week') {
-  return db.getLastMonthlyRecap(guildId) !== previousPeriodRange(now, period).key;
+export function isRecapDue(db, guildId, now, period = 'week', hourUtc = 0) {
+  const range = previousPeriodRange(now, period);
+  if (now < range.end + hourUtc * 60 * 60_000) return false;
+  return db.getLastMonthlyRecap(guildId) !== range.key;
 }
 
 /** Records the last completed period as announced, whether or not there was anything to post. */

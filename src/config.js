@@ -67,6 +67,16 @@ export const RECAP_PERIOD = (process.env.RECAP_PERIOD?.trim().toLowerCase() || '
 if (!RECAP_PERIODS.includes(RECAP_PERIOD)) {
   throw new Error(`RECAP_PERIOD must be one of ${RECAP_PERIODS.join(', ')} — got "${RECAP_PERIOD}".`);
 }
+// Which hour of the day (UTC) the recap is posted, counted from the moment the period ended. A
+// week ends Monday 00:00 UTC, so 18 posts it Monday 18:00 UTC, when people are actually around.
+// 0 posts as soon as the period turns over, which is the behaviour this exists to fix: the check
+// loop starts counting from process start, so before this the post landed at whatever minute past
+// midnight the bot happened to have been restarted at.
+export const RECAP_HOUR_UTC = Number(process.env.RECAP_HOUR_UTC ?? '0');
+if (!Number.isInteger(RECAP_HOUR_UTC) || RECAP_HOUR_UTC < 0 || RECAP_HOUR_UTC > 23) {
+  throw new Error(`RECAP_HOUR_UTC must be a whole number from 0 to 23 — got "${process.env.RECAP_HOUR_UTC}".`);
+}
+
 // Blank disables the badge entirely; the recap is still posted.
 export const RECAP_WINNER_ROLE = process.env.RECAP_WINNER_ROLE?.trim() ?? 'Champion of the Realm';
 export const RECAP_WINNER_ROLE_ICON = process.env.RECAP_WINNER_ROLE_ICON?.trim();

@@ -2,7 +2,7 @@ import { db, client } from './runtime.js';
 import { findTextChannel, presentMemberIds } from './ui.js';
 import {
   ACHIEVEMENT_ANNOUNCEMENTS, ACHIEVEMENT_CHANNEL, RECAP_CHANNEL, RECAP_PERIOD,
-  RECAP_MIN_SECONDS, RECAP_WINNER_ROLE, RECAP_WINNER_ROLE_ICON,
+  RECAP_MIN_SECONDS, RECAP_HOUR_UTC, RECAP_WINNER_ROLE, RECAP_WINNER_ROLE_ICON,
   SOCIAL_ENABLED, BARD_ROLE, BARD_ROLE_ICON, BARD_MIN_MINUTES,
   SCRIBE_ROLE, SCRIBE_ROLE_ICON, SCRIBE_MIN_MINUTES,
   CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE, CAVE_DWELLER_ROLE_ICON, CAVE_DWELLER_GRACE_MS,
@@ -273,7 +273,7 @@ async function applyCaveDwellerRole(guild, range, dwellers) {
  * recorded either way, so a quiet week is not retried forever and a restart cannot double-post.
  */
 export async function announceRecap(guild, now = Date.now(), { force = false } = {}) {
-  if (!force && !isRecapDue(db, guild.id, now, RECAP_PERIOD)) return null;
+  if (!force && !isRecapDue(db, guild.id, now, RECAP_PERIOD, RECAP_HOUR_UTC)) return null;
   const recap = buildRecap(db, guild.id, now, { period: RECAP_PERIOD, minSeconds: RECAP_MIN_SECONDS });
   const channel = findTextChannel(guild, RECAP_CHANNEL || ACHIEVEMENT_CHANNEL);
 
