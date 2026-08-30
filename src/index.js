@@ -25,33 +25,59 @@ import { isBackupDue, runBackup } from './backup.js';
  * announce.js, slash commands under commands/, components under interactions/.
  */
 
+/**
+ * Everything a guild needs before it is tracked: the social floor, live voice occupancy, slash
+ * commands, and whatever was already running when we arrived.
+ *
+ * Called from ClientReady *and* GuildCreate, so a server that adds the bot while it is running is
+ * set up there and then rather than waiting for the next restart.
+ */
+async function initGuild(guild) {
+  // The floor every "has said nothing" judgement is measured from. Recorded before the GUILD_ID
+  // filter because messages are recorded for every guild the bot is in, and the first call for a
+  // guild wins — moving it on a later start would reset everyone's silence to zero. On a join
+  // that first call is this one, which is what makes the arrival date the floor.
+  if (SOCIAL_ENABLED) db.markSocialTrackingStarted(guild.id);
+  const tracked = !GUILD_ID || guild.id === GUILD_ID;
+
+  // Commands first, ahead of the member fetch below. On a genuine join the member cache is cold, so
+  // that fetch really does go out — and it is the rate-limited one (gateway opcode 8), which can
+  // leave it queued for a long time. A new server with no slash commands looks broken, so nothing
+  // that can stall is allowed in front of registering them.
+  if (tracked) await guild.commands.set(commands);
+
+  if (SOCIAL_ENABLED) {
+    // Voice states arrive with the guild, but `channel.members` reads the member cache, so warm
+    // it once before trusting occupancy. Rows from a previous run were dropped when the database
+    // opened; this puts back everyone who is genuinely in a call right now.
+    await ensureMembersCached(guild);
+    for (const channel of guild.channels.cache.values()) {
+      if (channel.isVoiceBased?.() && channel.members?.size) {
+        settleRoom(db, guild, channel.id, Date.now(), SOCIAL_VOICE_DAILY_CAP_MINUTES);
+      }
+    }
+  }
+  if (!tracked) return;
+  // Presence updates that happened before the bot became ready are not replayed.
+  // Begin timing those activities from this successful connection.
+  for (const presence of guild.presences.cache.values()) {
+    if (presence.member) await updateActivity(presence.member, presence);
+  }
+}
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   for (const guild of readyClient.guilds.cache.values()) {
-    // The floor every "has said nothing" judgement is measured from. Recorded before the GUILD_ID
-    // filter because messages are recorded for every guild the bot is in, and the first call for a
-    // guild wins — moving it on a later start would reset everyone's silence to zero.
-    if (SOCIAL_ENABLED) {
-      db.markSocialTrackingStarted(guild.id);
-      // Voice states arrive with the guild, but `channel.members` reads the member cache, so warm
-      // it once before trusting occupancy. Rows from a previous run were dropped when the database
-      // opened; this puts back everyone who is genuinely in a call right now.
-      await ensureMembersCached(guild);
-      for (const channel of guild.channels.cache.values()) {
-        if (channel.isVoiceBased?.() && channel.members?.size) {
-          settleRoom(db, guild, channel.id, Date.now(), SOCIAL_VOICE_DAILY_CAP_MINUTES);
-        }
-      }
-    }
-    const scope = GUILD_ID ? (guild.id === GUILD_ID ? guild : null) : guild;
-    if (!scope) continue;
-    await scope.commands.set(commands);
-    // Presence updates that happened before the bot became ready are not replayed.
-    // Begin timing those activities from this successful connection.
-    for (const presence of scope.presences.cache.values()) {
-      if (presence.member) await updateActivity(presence.member, presence);
-    }
+    // Per guild, so one guild the bot cannot read leaves the rest set up.
+    await initGuild(guild).catch((error) => console.error(`Could not set up ${guild.id}:`, error));
   }
+});
+
+// Added to a server while running. Without this the guild is invisible until a restart: no slash
+// commands, no social floor, no voice occupancy.
+client.on(Events.GuildCreate, async (guild) => {
+  console.log(`Joined ${guild.name} (${guild.id})`);
+  await initGuild(guild).catch((error) => console.error(`Could not set up ${guild.id}:`, error));
 });
 
 client.on(Events.PresenceUpdate, async (_oldPresence, newPresence) => {
