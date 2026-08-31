@@ -13,6 +13,10 @@ Tracks time a member is visibly playing a game in Discord, stores it locally, an
   otherwise bank a full night of playtime. The clock stops when a member goes idle and restarts
   when they return; the gap counts toward nothing — not totals, not ranks, not the leaderboard,
   and not the session-length achievements. Set `PAUSE_ON_IDLE=false` to count idle time as play.
+- **Leaving the server closes the session.** Discord stops reporting anyone who is no longer in the
+  server, so a member who leaves mid-game would otherwise keep banking time until the next restart
+  and land as one enormous session. They are credited with what they played up to the moment they
+  left. Nothing of theirs is deleted — see below.
 - **Sessions are capped.** For the cases idle never catches — a mouse jiggler, or a client that
   simply never reports idle — any session past `MAX_SESSION_HOURS` of active time is closed.
   Anyone genuinely still playing is picked up again on their next presence change. Keep the cap

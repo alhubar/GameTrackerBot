@@ -15,7 +15,8 @@ import { ensureMembersCached } from './roles.js';
 import {
   announceAchievements, announceRecap, checkServerAchievements, announceEventOccurrence,
 } from './announce.js';
-import { rankForSeconds } from './ranks.js';
+import { memberRef } from './log.js';
+import { formatPlayTime, rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
 import { collectDueReminders, rollRecurringEvents } from './events.js';
 import { describeRawPresence } from './presenceSpike.js';
@@ -88,6 +89,28 @@ client.on(Events.PresenceUpdate, async (_oldPresence, newPresence) => {
     const member = newPresence.member;
     if (member) await updateActivity(member, newPresence);
   } catch (error) { console.error('Could not update activity:', error); }
+});
+
+// A member leaving is the one way a session can be orphaned. Presence events stop arriving for them
+// the instant they are gone, and every other guard is presence-driven: the idle pause needs an
+// event to fire on, and the runaway cap only exists when MAX_SESSION_HOURS is above zero. Left
+// open, the session keeps banking until the next restart closes it as one impossible row — which is
+// how a departed member took the longest-session record with 15h of Counter-Strike 2.
+//
+// Only the session is closed. Nothing is deleted, and nothing else changes: leaving is often
+// accidental, so a rejoiner still finds their hours, rank and achievements where they left them.
+//
+// Deliberately silent. The time up to this moment is banked because they really were playing it,
+// but no achievement is evaluated and nothing is announced — a member who has left is not there to
+// be congratulated. Same reasoning that keeps flushAll quiet on shutdown.
+client.on(Events.GuildMemberRemove, (member) => {
+  try {
+    const completed = db.stopSession(member.guild.id, member.id);
+    if (completed) {
+      console.log(`${memberRef(member)} left while playing ${completed.gameName} — session closed `
+        + `at ${formatPlayTime(completed.durationSeconds)}`);
+    }
+  } catch (error) { console.error('Could not close a departing session:', error); }
 });
 
 // The console-presence spike (issue #5), off unless PRESENCE_PLATFORM_LOG=true. Registered as a

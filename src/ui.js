@@ -45,7 +45,15 @@ export async function presentMemberIds(guild) {
   if (guild.memberCount && guild.members.cache.size >= guild.memberCount) {
     return new Set(guild.members.cache.keys());
   }
-  const members = await guild.members.fetch().catch(() => null);
+  const members = await guild.members.fetch().catch((error) => {
+    // Falling back to "show everyone" is deliberate, but it used to be *silent* — the one
+    // Discord-facing failure in the bot that degraded without saying so. That made a stray
+    // "Former member" on a leaderboard unexplainable after the fact: the label renders only on
+    // this path, so the line below is the difference between a diagnosable rate limit and a
+    // filter that looks broken.
+    console.error(`Could not fetch members for guild ${guild.id}; departed members will not be hidden:`, error);
+    return null;
+  });
   return members ? new Set(members.keys()) : null;
 }
 
