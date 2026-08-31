@@ -3,7 +3,7 @@ import { db, client } from './runtime.js';
 import {
   DISCORD_TOKEN, GUILD_ID, MAX_SESSION_MS, RECAP_ENABLED, EVENT_REMINDER_STAGES_MINUTES,
   BACKUP_ENABLED, BACKUP_DIR, BACKUP_KEEP, BACKUP_HOUR_UTC, BACKUP_MIRROR_DIR, SOCIAL_ENABLED,
-  SOCIAL_VOICE_DAILY_CAP_MINUTES, CAVE_DWELLER_ENABLED,
+  SOCIAL_VOICE_DAILY_CAP_MINUTES, CAVE_DWELLER_ENABLED, PRESENCE_PLATFORM_LOG,
 } from './config.js';
 import { commands } from './commands/index.js';
 import { handleInteraction } from './interactions/index.js';
@@ -16,6 +16,7 @@ import { announceAchievements, announceRecap, checkServerAchievements } from './
 import { rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
 import { collectDueReminders } from './events.js';
+import { describeRawPresence } from './presenceSpike.js';
 import { isBackupDue, runBackup } from './backup.js';
 
 /**
@@ -86,6 +87,19 @@ client.on(Events.PresenceUpdate, async (_oldPresence, newPresence) => {
     if (member) await updateActivity(member, newPresence);
   } catch (error) { console.error('Could not update activity:', error); }
 });
+
+// The console-presence spike (issue #5), off unless PRESENCE_PLATFORM_LOG=true. Registered as a
+// raw-gateway listener rather than folded into the PresenceUpdate handler above because the field
+// it exists to capture — the activity's `platform` — is dropped by discord.js before a Presence is
+// ever constructed. Logs only; nothing downstream reads it.
+if (PRESENCE_PLATFORM_LOG) {
+  client.on(Events.Raw, (packet) => {
+    try {
+      const line = describeRawPresence(packet);
+      if (line) console.log(line);
+    } catch (error) { console.error('Could not describe a raw presence:', error); }
+  });
+}
 
 // Text minutes for the Scribe badge. Registered only when the feature is on, so a disabled server
 // never even receives the events. recordMessage decides what counts and checks the opt-out; a

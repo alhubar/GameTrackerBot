@@ -54,6 +54,13 @@ Error lines refer to members by a short hash rather than a username or id, so pa
 into an issue or a chat does not publish who it was about. Set `DEBUG_IDENTIFIERS=true` to log real
 ids while debugging.
 
+`PRESENCE_PLATFORM_LOG=true` logs one line for every presence carrying a game, including the
+per-activity `platform` field (`ps5`, `xbox`, `desktop`) that discord.js drops before the bot sees
+it. It is there to answer whether a console presence can be told apart from a desktop one — a
+console keeps broadcasting a game after play stops, sometimes for hours, and neither the idle pause
+nor `MAX_SESSION_HOURS` can catch that. Nothing acts on it yet; it only logs, and it is noisy, so
+turn it on to capture a few real console presences and turn it back off.
+
 Discord can only report games a member exposes through their Discord presence. The bot cannot see activity hidden by a member's privacy settings, nor activity while Discord itself is offline. After a bot restart it begins timing any current activity from the time it reconnects.
 
 When someone reaches a new rank, the configured channel automatically receives the matching `LEVEL_UP_MESSAGE_*` from `.env`.

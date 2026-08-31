@@ -163,6 +163,12 @@ if (MAX_SESSION_HOURS > 0 && MAX_SESSION_HOURS * HOUR_MS <= LONGEST_SESSION_ACHI
 }
 export const MAX_SESSION_MS = MAX_SESSION_HOURS > 0 ? MAX_SESSION_HOURS * HOUR_MS : 0;
 
+// The console-presence spike (issue #5). Logs one line per raw PRESENCE_UPDATE carrying a Playing
+// activity, including the per-activity `platform` field discord.js drops before any handler sees
+// it. Off by default and noisy when on — it is evidence-gathering for a bug that has not been
+// reproduced on demand yet, not a diagnostic to leave running. See src/presenceSpike.js.
+export const PRESENCE_PLATFORM_LOG = process.env.PRESENCE_PLATFORM_LOG?.trim().toLowerCase() === 'true';
+
 function assertValidTimeZone(zone, variable) {
   try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); } catch {
     throw new Error(`${variable} zone "${zone}" is not a valid IANA timezone (e.g. Europe/Madrid, America/Chicago, UTC).`);
