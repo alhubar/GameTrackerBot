@@ -628,6 +628,21 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     WHERE guild_id = ? AND total_seconds >= ? AND ${NOT_OPTED_OUT('game_stats')}
     GROUP BY user_id ORDER BY games DESC LIMIT 1
   `);
+  /**
+   * Every session span overlapping a window, for the "when we play" histogram.
+   *
+   * Filtered on `ended_at` rather than `started_at` so a session that began before the window and
+   * ran into it still contributes the part that lands inside — `activity.js` clamps each span to
+   * the window and counts every hour it covered, which is the whole reason it needs both columns
+   * and not a `GROUP BY` on the start hour. Sessions that ended before the window are excluded by
+   * the same predicate, on `idx_play_sessions_guild_ended`.
+   *
+   * No opt-out filter, deliberately: this aggregates hours with nobody's name attached, the same
+   * ground server totals stand on, and an opted-out member stops producing rows here regardless.
+   */
+  const getSessionSpansStmt = db.prepare(
+    'SELECT started_at, ended_at FROM play_sessions WHERE guild_id = ? AND ended_at >= ?',
+  );
   const getConcurrentGameCountStmt = db.prepare('SELECT COUNT(DISTINCT game_name) AS count FROM active_sessions WHERE guild_id = ?');
   const getActiveSessionCountStmt = db.prepare('SELECT COUNT(*) AS count FROM active_sessions WHERE guild_id = ?');
   const getPlayersAboveSecondsStmt = db.prepare('SELECT COUNT(*) AS count FROM member_stats WHERE guild_id = ? AND total_seconds >= ?');
@@ -1453,6 +1468,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
         topCollector: getTopCollectorStmt.get(guildId, minSeconds) ?? null,
       };
     },
+    getSessionSpans: (guildId, sinceMs) => getSessionSpansStmt.all(guildId, sinceMs),
     getConcurrentGameCount: (guildId) => getConcurrentGameCountStmt.get(guildId).count,
     getActiveSessionCount: (guildId) => getActiveSessionCountStmt.get(guildId).count,
     /**

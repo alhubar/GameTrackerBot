@@ -163,17 +163,29 @@ if (MAX_SESSION_HOURS > 0 && MAX_SESSION_HOURS * HOUR_MS <= LONGEST_SESSION_ACHI
 }
 export const MAX_SESSION_MS = MAX_SESSION_HOURS > 0 ? MAX_SESSION_HOURS * HOUR_MS : 0;
 
+function assertValidTimeZone(zone, variable) {
+  try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); } catch {
+    throw new Error(`${variable} zone "${zone}" is not a valid IANA timezone (e.g. Europe/Madrid, America/Chicago, UTC).`);
+  }
+  return zone;
+}
+
 function parseTimezonePresets(value) {
   const zones = value ? value.split(',').map((zone) => zone.trim()).filter(Boolean) : ['UTC', 'America/New_York', 'Europe/Berlin', 'Asia/Tokyo'];
   if (zones.length > 25) throw new Error('EVENT_TIMEZONE_PRESETS has more than 25 entries — Discord select menus support at most 25 options.');
   return zones.map((zone) => {
-    try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); } catch {
-      throw new Error(`EVENT_TIMEZONE_PRESETS zone "${zone}" is not a valid IANA timezone (e.g. Europe/Madrid, America/Chicago, UTC).`);
-    }
+    assertValidTimeZone(zone, 'EVENT_TIMEZONE_PRESETS');
     return { label: zone.split('/').pop().replace(/_/g, ' '), value: zone };
   });
 }
 export const EVENT_TIMEZONE_PRESETS = parseTimezonePresets(process.env.EVENT_TIMEZONE_PRESETS?.trim());
+
+// The clock the "when we play" histogram on /server is drawn against. Everything else in this bot
+// is UTC and stays UTC — but that block is read as "which evening hour do people turn up", so it
+// has to be somebody's evening. Unlike EVENT_TIMEZONE_PRESETS this is a single zone rather than a
+// list: an event happens at one instant several members convert to their own time, whereas the
+// histogram is one shape that has to be labelled with the clock it was drawn on. Defaults to UTC.
+export const SERVER_TIMEZONE = assertValidTimeZone(process.env.SERVER_TIMEZONE?.trim() || 'UTC', 'SERVER_TIMEZONE');
 export const EVENT_REMINDER_STAGES_MINUTES = (process.env.EVENT_REMINDER_STAGES_MINUTES ?? '720,60,0')
   .split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value) && value >= 0)
   .sort((a, b) => b - a);
