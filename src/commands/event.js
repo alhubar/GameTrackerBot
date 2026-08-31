@@ -1,6 +1,7 @@
 import { ActionRowBuilder, StringSelectMenuBuilder, MessageFlags } from 'discord.js';
 import { db } from '../runtime.js';
 import { buildTimezoneSelectRow } from '../interactions/eventViews.js';
+import { describeRepeat } from '../events.js';
 
 export async function handleEventCreate(interaction) {
   await interaction.reply({
@@ -24,7 +25,11 @@ export async function handleEventList(interaction) {
     const reachable = event.message_id && interaction.guild.channels.cache.has(event.channel_id);
     const link = reachable ? `https://discord.com/channels/${event.guild_id}/${event.channel_id}/${event.message_id}` : null;
     const going = db.getEventSignups(event.id).filter((row) => row.status === 'going').length;
-    return `**${event.title}** — <t:${unixSeconds}:F> (<t:${unixSeconds}:R>) — ${going} going${link ? ` — [jump](${link})` : ''}`;
+    // A repeating event shows its rule here as well as on the card, because this list is where
+    // somebody checks whether next Friday is already covered before creating a second one.
+    const repeats = describeRepeat(event.repeat_rule);
+    const repeatText = repeats ? ` — 🔁 ${repeats.toLowerCase()}` : '';
+    return `**${event.title}** — <t:${unixSeconds}:F> (<t:${unixSeconds}:R>) — ${going} going${repeatText}${link ? ` — [jump](${link})` : ''}`;
   });
   const selectRow = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder().setCustomId('event:manage').setPlaceholder('Select an event to edit or delete it')

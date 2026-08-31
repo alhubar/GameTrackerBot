@@ -20,6 +20,7 @@ import {
   BARD_ROLE_COLOR, SCRIBE_ROLE_COLOR, CAVE_DWELLER_ROLE_COLOR,
 } from './roles.js';
 import { eligibleForSilence } from './social.js';
+import { buildEventEmbed, buildEventComponents } from './interactions/eventViews.js';
 
 /**
  * How far down each social board to look. Only the top few can ever hold a badge, but pass-down
@@ -335,4 +336,48 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
   await recordRecapWinners(guild, recap, social?.awards, now);
   markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
   return recap;
+}
+
+/**
+ * Posts a fresh announcement for a recurring event that has just rolled on to its next occurrence,
+ * and removes the one belonging to the occurrence that ended.
+ *
+ * Everything here is best-effort by design. `rollRecurringEvents` has already committed the new
+ * start time, so a channel that has been deleted or a send that is refused costs the *post*, not
+ * the schedule: the event still exists, `/event list` still shows it, and its reminders still fire.
+ * That is the whole reason the row is advanced before this is called rather than by it.
+ *
+ * **Nobody is pinged.** The invite line on the previous announcement is not carried over, and the
+ * previous occurrence's Going list is not re-pinged. Same rule the recap follows — an achievement
+ * pings because it is a thing you did, and a series coming round again is a thing that happened.
+ * The reminder stages still ping whoever signs up for this occurrence, which is the part somebody
+ * actually chose.
+ */
+export async function announceEventOccurrence(eventId, previousMessageId) {
+  const event = db.getEvent(eventId);
+  if (!event) return;
+  const guild = client.guilds.cache.get(event.guild_id);
+  const channel = guild?.channels.cache.get(event.channel_id);
+  if (!channel?.isTextBased()) {
+    console.warn(`[EVENT] Event ${eventId} rolled forward, but its channel is gone — no announcement posted.`);
+    return;
+  }
+  // First, so a failure here still leaves exactly one live announcement rather than none. The row
+  // no longer points at this message either way, so a copy left behind is a stale post, not a
+  // second card people can RSVP into and have answered the wrong occurrence.
+  if (previousMessageId) {
+    const old = await channel.messages.fetch(previousMessageId).catch(() => null);
+    if (old) {
+      await old.delete()
+        .catch((error) => console.warn(`[EVENT] Could not delete the previous announcement for event ${eventId}:`, error));
+    }
+  }
+  const message = await channel.send({
+    embeds: [buildEventEmbed(event, db.getEventSignups(eventId))],
+    components: buildEventComponents(eventId),
+  }).catch((error) => {
+    console.error(`[EVENT] Could not announce the next occurrence of event ${eventId}:`, error);
+    return null;
+  });
+  if (message) db.setEventMessageId(eventId, message.id);
 }

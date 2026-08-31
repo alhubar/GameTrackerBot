@@ -3,6 +3,7 @@ import {
   TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, UserSelectMenuBuilder,
 } from 'discord.js';
 import { CARD_ACCENT_COLOR, EVENT_TIMEZONE_PRESETS } from '../config.js';
+import { describeRepeat, REPEAT_RULES } from '../events.js';
 
 /**
  * Everything the `/event` subsystem *renders*, kept apart from the handlers that dispatch it.
@@ -34,6 +35,11 @@ export function buildEventEmbed(event, signups) {
     .addFields({ name: '🗓️ When', value: `<t:${unixSeconds}:F>\n<t:${unixSeconds}:R>`, inline: true });
   if (event.description) embed.setDescription(event.description);
   if (event.game_name) embed.addFields({ name: '🎮 Game', value: event.game_name, inline: true });
+  // Third in the inline row, so When / Game / Repeats fills it exactly. Shown at all only when the
+  // event repeats: every event ever created before this existed is a one-off, and saying so on all
+  // of them would be noise on the overwhelming majority.
+  const repeats = describeRepeat(event.repeat_rule);
+  if (repeats) embed.addFields({ name: '🔁 Repeats', value: repeats, inline: true });
   embed.addFields({
     name: `✅ Going (${going.length})`,
     value: going.length ? going.map((row) => `<@${row.user_id}>`).join(', ') : 'Nobody yet — be the first!',
@@ -130,6 +136,14 @@ export function buildEventModal(customId, title, timezoneLabel, values = {}) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder().setCustomId('description').setLabel('Description (optional)').setStyle(TextInputStyle.Paragraph)
         .setValue(values.description ?? '').setRequired(false),
+    ),
+    // The fifth and last row a modal may hold. A dropdown would be the obvious control and modals
+    // cannot contain one — the timezone step exists for exactly that reason, and it costs a whole
+    // extra click before the form opens. Paying that a second time, on every event whether or not
+    // it repeats, is worse than parsing a word.
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('repeat').setLabel(`Repeat (${REPEAT_RULES.join('/')})`).setStyle(TextInputStyle.Short)
+        .setPlaceholder('Leave blank for a one-off').setValue(values.repeat ?? '').setRequired(false),
     ),
   );
 }

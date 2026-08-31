@@ -113,7 +113,15 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       description TEXT,
       game_name TEXT,
       starts_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      -- A recurring event advances this same row rather than being re-created, so starts_at is
+      -- always the *next* occurrence and repeat_rule is the whole of the recurrence state.
+      -- NULL for a one-off, which is every event written before this column existed.
+      repeat_rule TEXT,
+      -- The zone the start time was typed in. Only recurrence needs it — a one-off is a single
+      -- instant every viewer sees in their own time — but "every Friday at 20:00" has to survive a
+      -- daylight-saving change, and a bare UTC instant has no time of day left to preserve.
+      timezone TEXT
     );
     CREATE TABLE IF NOT EXISTS event_signups (
       event_id INTEGER NOT NULL,
@@ -216,6 +224,12 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   const eventColumns = db.prepare('PRAGMA table_info(events)').all();
   if (!eventColumns.some((column) => column.name === 'message_id')) {
     db.exec('ALTER TABLE events ADD COLUMN message_id TEXT');
+  }
+  if (!eventColumns.some((column) => column.name === 'repeat_rule')) {
+    db.exec('ALTER TABLE events ADD COLUMN repeat_rule TEXT');
+  }
+  if (!eventColumns.some((column) => column.name === 'timezone')) {
+    db.exec('ALTER TABLE events ADD COLUMN timezone TEXT');
   }
   // The surviving name of a `merge` correction. game_name holds the name that disappeared, so the
   // pair reads as "X was folded into Y" — and a merge is the one correction whose subject is two
@@ -674,13 +688,13 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
 
   // Events
   const createEventStmt = db.prepare(`
-    INSERT INTO events (guild_id, channel_id, creator_id, title, description, game_name, starts_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO events (guild_id, channel_id, creator_id, title, description, game_name, starts_at, created_at, repeat_rule, timezone)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const getEventStmt = db.prepare('SELECT * FROM events WHERE id = ?');
   const setEventMessageIdStmt = db.prepare('UPDATE events SET message_id = ? WHERE id = ?');
   const updateEventStmt = db.prepare(`
-    UPDATE events SET title = ?, description = ?, game_name = ?, starts_at = ? WHERE id = ?
+    UPDATE events SET title = ?, description = ?, game_name = ?, starts_at = ?, repeat_rule = ?, timezone = ? WHERE id = ?
   `);
   const deleteEventStmt = db.prepare('DELETE FROM events WHERE id = ?');
   const deleteEventSignupsStmt = db.prepare('DELETE FROM event_signups WHERE event_id = ?');
@@ -702,7 +716,19 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   const getUpcomingEventsForGuildStmt = db.prepare('SELECT * FROM events WHERE guild_id = ? AND starts_at > ? ORDER BY starts_at LIMIT ?');
   // Full rows, not just ids: expiring an event also deletes its announcement message, which
   // needs channel_id and message_id read before the row goes.
-  const getStaleEventsStmt = db.prepare('SELECT * FROM events WHERE starts_at < ?');
+  //
+  // Recurring rows are excluded outright rather than relying on the roll loop having already moved
+  // them out of range. The roll is pure arithmetic and cannot fail, but if it ever did, deleting
+  // the row would cancel somebody's standing game night permanently — where skipping it leaves a
+  // stale event that /event list still shows and an admin can delete by hand.
+  const getStaleEventsStmt = db.prepare('SELECT * FROM events WHERE starts_at < ? AND repeat_rule IS NULL');
+  const getRecurringEventsDueStmt = db.prepare('SELECT * FROM events WHERE repeat_rule IS NOT NULL AND starts_at <= ? ORDER BY starts_at');
+  // The compare-and-swap that makes recurrence exactly-once: the row only moves if its start time
+  // is still the one the caller read. message_id is cleared in the same statement, because the
+  // announcement it points at belongs to the occurrence that just ended — leaving it would let a
+  // later edit rewrite last week's post with next week's details.
+  const rollEventStmt = db.prepare('UPDATE events SET starts_at = ?, message_id = NULL WHERE id = ? AND starts_at = ?');
+  const clearEventRepeatStmt = db.prepare('UPDATE events SET repeat_rule = NULL WHERE id = ?');
   const hasReminderSentStmt = db.prepare('SELECT 1 FROM event_reminders_sent WHERE event_id = ? AND stage_minutes = ?');
   const getLastReminderSentAtStmt = db.prepare('SELECT MAX(sent_at) AS last FROM event_reminders_sent WHERE event_id = ?');
   const markReminderSentStmt = db.prepare(`
@@ -1490,13 +1516,13 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     getAllMemberTotals: (guildId, now = Date.now()) => getAllMemberTotalsStmt.all(guildId, now, guildId),
     getQualifiedDuoPairCount: (guildId, daysNeeded) => getQualifiedDuoPairCountStmt.get(guildId, daysNeeded).count,
 
-    createEvent: (guildId, channelId, creatorId, title, description, gameName, startsAt, now = Date.now()) =>
-      createEventStmt.run(guildId, channelId, creatorId, title, description, gameName, startsAt, now).lastInsertRowid,
+    createEvent: (guildId, channelId, creatorId, title, description, gameName, startsAt, now = Date.now(), repeatRule = null, timeZone = null) =>
+      createEventStmt.run(guildId, channelId, creatorId, title, description, gameName, startsAt, now, repeatRule, timeZone).lastInsertRowid,
     getEvent: (eventId) => getEventStmt.get(eventId) ?? null,
     setEventMessageId: (eventId, messageId) => setEventMessageIdStmt.run(messageId, eventId),
-    updateEvent(eventId, title, description, gameName, startsAt) {
+    updateEvent(eventId, title, description, gameName, startsAt, repeatRule = null, timeZone = null) {
       const existing = getEventStmt.get(eventId);
-      updateEventStmt.run(title, description, gameName, startsAt, eventId);
+      updateEventStmt.run(title, description, gameName, startsAt, repeatRule, timeZone, eventId);
       // Only reset which reminder stages have fired if the start time actually moved —
       // otherwise an already-sent reminder would immediately re-fire on the next tick.
       if (existing && existing.starts_at !== startsAt) deleteEventRemindersStmt.run(eventId);
@@ -1516,6 +1542,24 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     getUpcomingEvents: (afterMs) => getUpcomingEventsStmt.all(afterMs),
     getUpcomingEventsForGuild: (guildId, afterMs, limit = 10) => getUpcomingEventsForGuildStmt.all(guildId, afterMs, limit),
     getStaleEvents: (beforeMs) => getStaleEventsStmt.all(beforeMs),
+    getRecurringEventsDue: (beforeMs) => getRecurringEventsDueStmt.all(beforeMs),
+    /**
+     * Moves a recurring event on to its next occurrence, clearing the RSVPs and fired reminder
+     * stages that belonged to the one just gone. Answers false when the row had already moved,
+     * which is what makes a retry — or a second bot on the same token — harmless.
+     */
+    rollEventForward(eventId, fromStartsAt, nextStartsAt) {
+      const roll = db.transaction(() => {
+        if (!rollEventStmt.run(nextStartsAt, eventId, fromStartsAt).changes) return false;
+        // Last week's "I'm in" is not an answer about next week, and a stage marked sent for the
+        // occurrence that just passed would otherwise suppress the same stage for the next one.
+        deleteEventSignupsStmt.run(eventId);
+        deleteEventRemindersStmt.run(eventId);
+        return true;
+      });
+      return roll();
+    },
+    clearEventRepeat: (eventId) => clearEventRepeatStmt.run(eventId),
     hasReminderSent: (eventId, stageMinutes) => !!hasReminderSentStmt.get(eventId, stageMinutes),
     getLastReminderSentAt: (eventId) => getLastReminderSentAtStmt.get(eventId).last ?? null,
     markReminderSent: (eventId, stageMinutes, now = Date.now()) => markReminderSentStmt.run(eventId, stageMinutes, now),

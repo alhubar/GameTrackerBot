@@ -12,10 +12,12 @@ import {
 } from './tracking.js';
 import { recordMessage, shouldRecordMessage, settleRoom, settleAllRooms } from './socialTracking.js';
 import { ensureMembersCached } from './roles.js';
-import { announceAchievements, announceRecap, checkServerAchievements } from './announce.js';
+import {
+  announceAchievements, announceRecap, checkServerAchievements, announceEventOccurrence,
+} from './announce.js';
 import { rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
-import { collectDueReminders } from './events.js';
+import { collectDueReminders, rollRecurringEvents } from './events.js';
 import { describeRawPresence } from './presenceSpike.js';
 import { isBackupDue, runBackup } from './backup.js';
 
@@ -216,6 +218,15 @@ setInterval(async () => {
 // rules live in events.js so they can be tested without Discord; this loop just delivers them.
 setInterval(async () => {
   const now = Date.now();
+  // Roll every recurring event whose occurrence has passed on to the next one, and post a fresh
+  // announcement for it. Ahead of the reminder scan so a rolled event is measured against its new
+  // start time in the same tick, and ahead of the expiry sweep below, which skips recurring rows
+  // entirely. The database half already happened inside rollRecurringEvents and is exactly-once;
+  // everything this loop does is the part that is allowed to fail.
+  for (const { event, previousMessageId } of rollRecurringEvents(db, now)) {
+    await announceEventOccurrence(event.id, previousMessageId)
+      .catch((error) => console.error(`Could not announce the next occurrence of event ${event.id}:`, error));
+  }
   for (const { event, going, text } of collectDueReminders(db, EVENT_REMINDER_STAGES_MINUTES, now)) {
     const guild = client.guilds.cache.get(event.guild_id);
     const channel = guild?.channels.cache.get(event.channel_id);

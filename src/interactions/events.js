@@ -1,7 +1,7 @@
 import { EmbedBuilder, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { db, client } from '../runtime.js';
 import { COUNTS_AS_PLAYED_SECONDS } from '../achievements.js';
-import { parseEventTime, formatEventTime } from '../events.js';
+import { parseEventTime, formatEventTime, parseRepeatRule } from '../events.js';
 import {
   RSVP_STATUSES, MANAGE_ACTIONS, buildEventEmbed, buildEventComponents, buildEventModal,
   buildTimezoneSelectRow, buildEventInviteRow, timezoneLabelFor, withoutMention, contentPatchAfterReply,
@@ -243,6 +243,7 @@ export async function handleTimezoneEditSelect(interaction) {
     at: formatEventTime(event.starts_at, zone),
     game: event.game_name ?? '',
     description: event.description ?? '',
+    repeat: event.repeat_rule ?? '',
   });
   await interaction.showModal(modal);
 }
@@ -253,6 +254,11 @@ export async function handleEventCreateModal(interaction) {
   const atText = interaction.fields.getTextInputValue('at');
   const description = interaction.fields.getTextInputValue('description') || null;
   const game = interaction.fields.getTextInputValue('game') || null;
+  const { rule: repeatRule, error: repeatError } = parseRepeatRule(interaction.fields.getTextInputValue('repeat'));
+  if (repeatError) {
+    await interaction.reply({ content: repeatError, flags: MessageFlags.Ephemeral });
+    return;
+  }
   const { utcMs, error: parseError } = parseEventTime(atText, zone);
   if (parseError) {
     await interaction.reply({ content: `${parseError} (interpreted in ${timezoneLabelFor(zone)} time)`, flags: MessageFlags.Ephemeral });
@@ -262,7 +268,9 @@ export async function handleEventCreateModal(interaction) {
     await interaction.reply({ content: 'That time is in the past — pick a time in the future.', flags: MessageFlags.Ephemeral });
     return;
   }
-  const eventId = db.createEvent(interaction.guild.id, interaction.channelId, interaction.user.id, title, description, game, utcMs);
+  // The zone is stored, not just used and discarded: a repeating event has to keep its time of day
+  // across a daylight-saving change, and the instant alone no longer says what that time of day was.
+  const eventId = db.createEvent(interaction.guild.id, interaction.channelId, interaction.user.id, title, description, game, utcMs, Date.now(), repeatRule, zone);
   const event = db.getEvent(eventId);
   await interaction.reply({ embeds: [buildEventEmbed(event, [])], components: buildEventComponents(eventId) });
   const reply = await interaction.fetchReply().catch(() => null);
@@ -293,6 +301,11 @@ export async function handleEventEditModal(interaction) {
   const atText = interaction.fields.getTextInputValue('at');
   const description = interaction.fields.getTextInputValue('description') || null;
   const game = interaction.fields.getTextInputValue('game') || null;
+  const { rule: repeatRule, error: repeatError } = parseRepeatRule(interaction.fields.getTextInputValue('repeat'));
+  if (repeatError) {
+    await interaction.reply({ content: repeatError, flags: MessageFlags.Ephemeral });
+    return;
+  }
   const { utcMs, error: parseError } = parseEventTime(atText, zone);
   if (parseError) {
     await interaction.reply({ content: `${parseError} (interpreted in ${timezoneLabelFor(zone)} time)`, flags: MessageFlags.Ephemeral });
@@ -302,7 +315,10 @@ export async function handleEventEditModal(interaction) {
     await interaction.reply({ content: 'That time is in the past — pick a time in the future.', flags: MessageFlags.Ephemeral });
     return;
   }
-  db.updateEvent(eventId, title, description, game, utcMs);
+  // Both the rule and the zone come off the form every time, so clearing the Repeat field is how a
+  // series is turned back into a one-off, and an edit made from a different zone re-anchors the
+  // recurrence to that one — which is the same zone the new start time was just read in.
+  db.updateEvent(eventId, title, description, game, utcMs, repeatRule, zone);
   const updatedEvent = db.getEvent(eventId);
   const signups = db.getEventSignups(eventId);
   const updatedEmbed = buildEventEmbed(updatedEvent, signups);

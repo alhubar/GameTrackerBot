@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 process.env.DISCORD_TOKEN ??= 'test-token';
 const {
   RSVP_STATUSES, MANAGE_ACTIONS, buildEventEmbed, buildEventComponents, buildEventManagePanel,
-  withoutMention, contentPatchAfterReply,
+  withoutMention, contentPatchAfterReply, buildEventModal,
 } = await import('../src/interactions/eventViews.js');
 
 const EVENT = {
@@ -212,6 +212,16 @@ describe('buildEventEmbed', () => {
     assert.equal(field('❌').value, '<@4>');
   });
 
+  test('names the repeat rule, and only for an event that repeats', () => {
+    const once = buildEventEmbed(EVENT, []).toJSON();
+    assert.ok(!once.fields.some((field) => field.name === '🔁 Repeats'), 'every event predating recurrence is a one-off');
+
+    const weekly = buildEventEmbed({ ...EVENT, repeat_rule: 'weekly' }, []).toJSON();
+    const repeats = weekly.fields.find((field) => field.name === '🔁 Repeats');
+    assert.equal(repeats.value, 'Every week');
+    assert.equal(repeats.inline, true, 'third in the When / Game / Repeats row');
+  });
+
   test('adds the optional game and description only when the event has them', () => {
     const bare = buildEventEmbed(EVENT, []).toJSON();
     assert.equal(bare.description, undefined);
@@ -220,5 +230,28 @@ describe('buildEventEmbed', () => {
     const full = buildEventEmbed({ ...EVENT, description: 'Bring snacks', game_name: 'Deep Rock' }, []).toJSON();
     assert.equal(full.description, 'Bring snacks');
     assert.equal(full.fields.find((field) => field.name === '🎮 Game').value, 'Deep Rock');
+  });
+});
+
+describe('buildEventModal', () => {
+  // Discord allows a modal five action rows and no more, so the Repeat field is the last one that
+  // will ever fit. Anything else this form needs has to replace something.
+  test('fills all five rows a modal may hold', () => {
+    const rows = buildEventModal('event:createmodal:UTC', 'Create event', 'UTC').toJSON().components;
+    assert.equal(rows.length, 5);
+    assert.deepEqual(rows.map((row) => row.components[0].custom_id), ['title', 'at', 'game', 'description', 'repeat']);
+  });
+
+  test('the repeat field is optional and names the rules it accepts', () => {
+    const repeat = buildEventModal('event:createmodal:UTC', 'Create event', 'UTC').toJSON().components[4].components[0];
+    assert.equal(repeat.required, false);
+    assert.match(repeat.label, /daily\/weekly\/fortnightly/);
+    assert.ok(repeat.label.length <= 45, 'Discord rejects a label longer than 45 characters');
+    assert.match(repeat.placeholder, /one-off/);
+  });
+
+  test('an edit pre-fills the rule the series already has', () => {
+    const modal = buildEventModal('event:editmodal:7:UTC', 'Edit event', 'UTC', { title: 'Game Night', repeat: 'fortnightly' });
+    assert.equal(modal.toJSON().components[4].components[0].value, 'fortnightly');
   });
 });
