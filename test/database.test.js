@@ -499,15 +499,22 @@ describe('mid-session reporting does not double-count', () => {
 
   test('getTopGameByHours reports banked hours, not doubled ones', () => {
     db.startSession(GUILD, USER, 'Obsession', T0);
+    playSession(db, GUILD, 'other', 'Obsession', T0, SECOND);
     db.checkpointAll(T0 + 10 * HOUR);
-    assert.equal(db.getTopGameByHours(GUILD, T0 + 10 * HOUR).total_seconds, 10 * 3600);
+    assert.equal(db.getTopGameByHours(GUILD, T0 + 10 * HOUR).total_seconds, 10 * 3600 + 1);
   });
 
   test('a mid-session game does not overtake a genuinely bigger one', () => {
     playSession(db, GUILD, 'a', 'Established', T0, 9 * HOUR);
+    playSession(db, GUILD, 'a2', 'Established', T0, SECOND);
     db.startSession(GUILD, 'b', 'Upstart', T0 + 10 * HOUR);
     db.checkpointAll(T0 + 15 * HOUR);
     assert.equal(db.getTopGameByHours(GUILD, T0 + 15 * HOUR).game_name, 'Established');
+  });
+
+  test('a game only one person has ever played does not count as dominant', () => {
+    playSession(db, GUILD, 'solo', 'Solitaire', T0, 20 * HOUR);
+    assert.equal(db.getTopGameByHours(GUILD, T0 + 20 * HOUR), null);
   });
 });
 

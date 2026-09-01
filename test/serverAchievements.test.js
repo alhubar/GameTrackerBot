@@ -98,6 +98,14 @@ describe('computeServerMetrics', () => {
     assert.equal(metrics.topGamePlayerCount, 2);
   });
 
+  test('a game only one person has played is not the dominant game', () => {
+    playSession(db, GUILD, 'a', 'Solo Grind', T0, 20 * HOUR);
+    playSession(db, GUILD, 'b', 'Shared', T0, HOUR);
+    playSession(db, GUILD, 'c', 'Shared', T0, HOUR);
+    const metrics = computeServerMetrics(db, GUILD, T0 + 25 * HOUR);
+    assert.equal(metrics.topGameHoursName, 'Shared');
+  });
+
   test('counts games being played concurrently right now', () => {
     db.startSession(GUILD, 'a', 'One', T0);
     db.startSession(GUILD, 'b', 'Two', T0);
@@ -154,9 +162,15 @@ describe('community growth and library tiers', () => {
 });
 
 describe('game dominance', () => {
-  test('dominance-by-hours tiers unlock for a single popular game', () => {
+  test('dominance-by-hours tiers unlock for a game shared by more than one member', () => {
     playSession(db, GUILD, 'a', 'Favourite', T0, 4 * HOUR);
+    playSession(db, GUILD, 'b', 'Favourite', T0, SECOND);
     assert.ok(unlockedIds(T0 + 10 * HOUR).has('server_favorite'));
+  });
+
+  test('a game only one member has ever played cannot unlock dominance-by-hours', () => {
+    playSession(db, GUILD, 'a', 'Solo Favourite', T0, 20 * HOUR);
+    assert.ok(!unlockedIds(T0 + 20 * HOUR).has('server_favorite'));
   });
 
   test('dominance-by-players counts distinct members on one game', () => {

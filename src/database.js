@@ -612,12 +612,15 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     SELECT COALESCE(SUM(CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER)), 0) AS total_seconds
     FROM active_sessions WHERE guild_id = ?
   `);
+  // Requires at least two distinct players so one person's own game can't read as "the server is
+  // obsessed with this" (issue #20) — a game only one person has ever touched is excluded entirely,
+  // not just docked, so a smaller game with real shared time can win instead.
   const getTopGameByHoursStmt = db.prepare(`
     SELECT game_name, SUM(total_seconds) AS total_seconds FROM (
-      SELECT game_name, total_seconds FROM game_stats WHERE guild_id = ?
+      SELECT user_id, game_name, total_seconds FROM game_stats WHERE guild_id = ?
       UNION ALL
-      SELECT game_name, CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
-    ) GROUP BY game_name ORDER BY total_seconds DESC LIMIT 1
+      SELECT user_id, game_name, CAST(MAX(0, (COALESCE(paused_at, ?) - last_checkpoint_at) / 1000) AS INTEGER) FROM active_sessions WHERE guild_id = ?
+    ) GROUP BY game_name HAVING COUNT(DISTINCT user_id) >= 2 ORDER BY total_seconds DESC LIMIT 1
   `);
   // Counts a member toward a game only once they personally have minSeconds in it, so a crowd that
   // all launched the same thing once does not read as a game the whole server plays.
