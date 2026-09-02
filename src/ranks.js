@@ -49,3 +49,26 @@ export function levelUpMessageTemplate(rankIndex) {
   return process.env[`LEVEL_UP_MESSAGE_${rankIndex + 1}`]
     ?? '🎮 {user} has become **Level {level} — {rank}** after **{hours}** of playtime!';
 }
+
+/**
+ * Detects the RANK_NAMES insertion trap (#19): inserting a rank anywhere but the end shifts every
+ * saved role down one index with no error, since each role still gets *a* name from the new list —
+ * just the wrong one.
+ *
+ * The signature is a saved role whose *current* Discord name still names one of the configured
+ * ranks, just not the one it's saved under. A deliberate rename retires the old name entirely, so it
+ * won't match anything in `RANKS`; an insertion or reorder only moves the name, so the same string
+ * reappears at a different index. `roleNames` maps role id → current Discord role name.
+ */
+export function detectRankShift(savedRoles, roleNames) {
+  const indexByName = new Map(RANKS.map((rank, index) => [roleName(rank), index]));
+  return savedRoles
+    .map(({ rank_index: savedIndex, role_id: roleId }) => {
+      const name = roleNames.get(roleId);
+      const foundIndex = name === undefined ? undefined : indexByName.get(name);
+      return foundIndex === undefined || foundIndex === savedIndex
+        ? null
+        : { savedIndex, foundIndex, roleId, name };
+    })
+    .filter((shift) => shift !== null);
+}

@@ -9,7 +9,9 @@ import {
   removeRankRoles, removeRoleByName, ensureMembersCached, ensureBadgeRole, UNRANKED_ROLE_COLOR,
 } from './roles.js';
 import { findTextChannel } from './ui.js';
-import { RANKS, RANK_HOURS, formatHours, levelUpMessageTemplate, rankForSeconds, roleName } from './ranks.js';
+import {
+  RANKS, RANK_HOURS, formatHours, levelUpMessageTemplate, rankForSeconds, roleName, detectRankShift,
+} from './ranks.js';
 import {
   evaluateSessionStart, evaluateSessionEnd, evaluateSocialTiers, evaluateDuoDays,
 } from './achievements.js';
@@ -220,8 +222,32 @@ export async function updateActivity(member, presence) {
   await checkServerAchievements(member.guild).catch(console.error);
 }
 
+/**
+ * Thrown by `setupRoles` when RANK_NAMES looks like it was reordered or had a rank inserted rather
+ * than renamed — see `detectRankShift`. Deliberately stops before renaming anything: silently
+ * "repairing" this would be the same silent demotion the check exists to catch.
+ */
+export class RankShiftDetected extends Error {
+  constructor(shifts) {
+    const detail = shifts
+      .map(({ name, savedIndex, foundIndex }) => `"${name}" was rank ${savedIndex + 1}, now looks like rank ${foundIndex + 1}`)
+      .join('; ');
+    super(
+      `RANK_NAMES looks like it was reordered or had a rank inserted, not just renamed (${detail}). `
+      + 'Renaming roles now would silently shift who holds which rank. Stop the bot, delete this '
+      + "guild's rank_roles rows, restart it and run /setup again — with no saved mapping it "
+      + 'matches every role by name instead.',
+    );
+    this.shifts = shifts;
+  }
+}
+
 export async function setupRoles(guild) {
-  const savedRoles = new Map(db.getRankRoles(guild.id).map((entry) => [entry.rank_index, entry.role_id]));
+  const rankRoles = db.getRankRoles(guild.id);
+  const roleNames = new Map(guild.roles.cache.map((role) => [role.id, role.name]));
+  const shifts = detectRankShift(rankRoles, roleNames);
+  if (shifts.length) throw new RankShiftDetected(shifts);
+  const savedRoles = new Map(rankRoles.map((entry) => [entry.rank_index, entry.role_id]));
   const legacyRoles = [...guild.roles.cache.values()]
     .filter((role) => role.name.startsWith('Game Tracker | ') && ![...savedRoles.values()].includes(role.id))
     .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
