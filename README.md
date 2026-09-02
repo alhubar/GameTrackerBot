@@ -241,7 +241,13 @@ case the default was overridden under **Server Settings → Integrations**.
 - **`/adjust time`** — add or remove minutes on one game for one member. A negative number removes.
 - **`/adjust session`** — void one bogus session outright, taking back the time and the session tally it credited.
 - **`/adjust merge`** — fold two spellings of one game into a single name, for everybody at once.
+- **`/adjust sessions`** — list what has actually been recorded, for one member or the whole server.
 - **`/adjust log`** — the audit trail, for one member or the whole server.
+
+`/adjust sessions` is the read-only half and the usual first step: it lists the most recent completed sessions with
+the id `/adjust session` takes, and leads with anything running right now — including whether a running session is
+paused because Discord reported the member idle, which is the ordinary reason a total stops moving. A session has no
+id until it closes, so a running one cannot be voided yet.
 
 The game, the session and both sides of a merge are picked from a list rather than typed. Game names arrive as free
 text from Discord presence, exact punctuation and all, so a typed name that is slightly wrong would not error — it

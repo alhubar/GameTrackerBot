@@ -18,12 +18,19 @@ import { ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession, mergeGames } from '
  */
 
 const LOG_LIMIT = 10;
+const SESSION_LOG_LIMIT = 10;
+// An embed description is capped at 4096 characters, and a Discord activity name is free text long
+// enough that twenty rows of one could pass that on their own. Bounding the name bounds the line,
+// which bounds the list — more predictable than dropping rows off the end of an audit.
+const GAME_NAME_MAX = 60;
 // Discord caps an autocomplete choice name at 100 characters and a response at 25 choices.
 const CHOICE_NAME_MAX = 100;
 const CHOICE_LIMIT = 25;
 
 const signed = (seconds) => `${seconds < 0 ? '−' : '+'}${formatPlayTime(Math.abs(seconds))}`;
 const rankName = (index) => (index >= 0 ? RANKS[index] : 'no rank');
+const stamp = (ms, style = 'f') => `<t:${Math.floor(ms / 1000)}:${style}>`;
+const gameLabel = (name) => (name.length > GAME_NAME_MAX ? `${name.slice(0, GAME_NAME_MAX - 1)}…` : name);
 
 function rankLine(totalBefore, totalAfter) {
   const before = rankForSeconds(totalBefore);
@@ -211,6 +218,84 @@ async function handleMerge(interaction) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+/**
+ * `/adjust sessions` — the read half of the session tools.
+ *
+ * Until this existed, a recorded session could only be *seen* from inside the `/adjust session`
+ * picker: one member at a time, and only while part-way through voiding one. "Did the bot record
+ * last night properly?" had no answer short of opening the database, which is the question the rest
+ * of this command already exists to act on.
+ *
+ * Running sessions lead the list because they are what an audit is usually chasing — a session that
+ * never closed, or one still banking time for somebody who stopped playing hours ago. They carry no
+ * id: nothing reaches `play_sessions` until it closes, so there is nothing for `/adjust session` to
+ * void yet.
+ *
+ * Deliberately not filtered for opt-out or for departure. Opt-out filters rankings and records, and
+ * this is neither — it is an admin reading the bot's own record in order to correct it, the same
+ * ground `/adjust log` stands on. An opted-out member accrues nothing new anyway, which is why
+ * their status is stated rather than left to explain a short list.
+ */
+async function handleSessions(interaction) {
+  const user = interaction.options.getUser('member');
+  const userId = user?.id ?? null;
+  const now = Date.now();
+  const running = db.getRunningSessions(interaction.guild.id, userId, SESSION_LOG_LIMIT, now);
+  const rows = db.getSessionLog(interaction.guild.id, userId, SESSION_LOG_LIMIT);
+  // Stated rather than left to explain itself: an admin reading a short or empty list for somebody
+  // who opted out is otherwise looking at a tracking bug that is not there.
+  const optOutNote = user && db.isOptedOut(interaction.guild.id, user.id)
+    ? `⚠️ **${user.tag}** has opted out of tracking, so nothing new is being recorded for them.`
+    : null;
+
+  if (!running.length && !rows.length) {
+    const nothing = user
+      ? `No sessions are recorded for **${user.tag}**.`
+      : 'No sessions are recorded in this server yet.';
+    await interaction.editReply(optOutNote ? `${nothing}\n${optOutNote}` : nothing);
+    return;
+  }
+
+  // A filtered list names the member once in the title, so the per-row mention is carried only on
+  // the server-wide list, where consecutive rows are about different people.
+  const who = (id) => (user ? '' : ` <@${id}>`);
+  const lines = [];
+
+  if (running.length) {
+    lines.push('**Running now**');
+    lines.push(...running.map((session) => {
+      // An idle session is the most common reason a total "stopped moving", and the pause is
+      // invisible on every other surface — the elapsed time simply stops growing.
+      const idle = session.pausedAt
+        ? ` · ⏸️ idle since ${stamp(session.pausedAt, 'R')}, not counting`
+        : '';
+      // The start is a full date rather than a time of day: a session running since Tuesday is
+      // exactly the one this list is for, and "started 20:44" would not say which Tuesday.
+      return `▶️${who(session.userId)} **${gameLabel(session.gameName)}** · `
+        + `${formatPlayTime(session.elapsedSeconds)} so far · started ${stamp(session.startedAt)}${idle}`;
+    }));
+  }
+
+  if (rows.length) {
+    if (running.length) lines.push('', '**Recorded**');
+    lines.push(...rows.map((row) => `\`#${row.id}\`${who(row.user_id)} **${gameLabel(row.game_name)}** · `
+      + `${formatPlayTime(row.duration_seconds)} · ended ${stamp(row.ended_at)}`));
+  }
+
+  if (optOutNote) lines.push('', optOutNote);
+
+  const embed = new EmbedBuilder()
+    .setColor(CARD_ACCENT_COLOR)
+    .setTitle(user ? `🎮 Sessions for ${user.tag}` : '🎮 Recent sessions')
+    .setDescription(lines.join('\n'))
+    .setFooter({
+      text: rows.length
+        ? `Showing the ${rows.length} most recent. Void one with /adjust session — the id is what its picker lists.`
+        : 'Nothing has finished yet — a session only gets an id once it closes.',
+    });
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleLog(interaction) {
   const user = interaction.options.getUser('member');
   const rows = db.getAdjustments(interaction.guild.id, user?.id ?? null, LOG_LIMIT);
@@ -243,7 +328,9 @@ async function handleLog(interaction) {
   await interaction.editReply({ embeds: [embed] });
 }
 
-const SUBCOMMANDS = { time: handleTime, session: handleSession, merge: handleMerge, log: handleLog };
+const SUBCOMMANDS = {
+  time: handleTime, session: handleSession, merge: handleMerge, sessions: handleSessions, log: handleLog,
+};
 
 export async function handleAdjust(interaction) {
   // Discord hides the command from non-admins, but that default is overridable per-command under

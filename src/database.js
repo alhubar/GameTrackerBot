@@ -309,6 +309,24 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     SELECT id, game_name, started_at, ended_at, duration_seconds FROM play_sessions
     WHERE guild_id = ? AND user_id = ? ORDER BY ended_at DESC LIMIT ?
   `);
+  // The reading half of the same history, for `/adjust sessions`: the picker above answers "which
+  // session am I about to void", this one answers "what has the bot actually recorded". Optional
+  // member filter in the `(? IS NULL OR ...)` shape `getAdjustments` already uses, so one statement
+  // serves both the server-wide list and one member's. `ended_at DESC` rides
+  // idx_play_sessions_guild_ended; the id breaks a tie between two sessions that ended in the same
+  // millisecond, which is otherwise an unstable order.
+  const getSessionLogStmt = db.prepare(`
+    SELECT id, user_id, game_name, started_at, ended_at, duration_seconds FROM play_sessions
+    WHERE guild_id = ? AND (? IS NULL OR user_id = ?)
+    ORDER BY ended_at DESC, id DESC LIMIT ?
+  `);
+  // Oldest first, deliberately: a session that has been running for two days is the one an audit is
+  // looking for, and it is the one a `LIMIT` ordered the other way would cut off.
+  const getRunningSessionsStmt = db.prepare(`
+    SELECT user_id, game_name, started_at, paused_at, paused_seconds FROM active_sessions
+    WHERE guild_id = ? AND (? IS NULL OR user_id = ?)
+    ORDER BY started_at LIMIT ?
+  `);
   // Includes a running session's game, which has no game_stats row until its first checkpoint —
   // the mis-reported session an admin most wants to correct is often the one happening right now.
   const getMemberGameNamesStmt = db.prepare(`
@@ -1127,6 +1145,22 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     getGuildGameNames: (guildId, limit = 25) =>
       getGuildGameNamesStmt.all(guildId, guildId, limit).map((row) => row.game_name),
     getRecentSessions: (guildId, userId, limit = 25) => getRecentSessionsStmt.all(guildId, userId, limit),
+    /** Completed sessions, newest first. `userId` null means the whole guild. */
+    getSessionLog: (guildId, userId = null, limit = 10) =>
+      getSessionLogStmt.all(guildId, userId, userId, limit),
+    /**
+     * Sessions in flight right now, carrying the same idle-adjusted elapsed time that will be
+     * written to `play_sessions` when they close — so a running row can never show a number the
+     * completed row then contradicts. A paused session reports the time it had when it went idle.
+     */
+    getRunningSessions: (guildId, userId = null, limit = 10, now = Date.now()) =>
+      getRunningSessionsStmt.all(guildId, userId, userId, limit).map((session) => ({
+        userId: session.user_id,
+        gameName: session.game_name,
+        startedAt: session.started_at,
+        pausedAt: session.paused_at,
+        elapsedSeconds: Math.floor(activeElapsedMs(session, now) / 1000),
+      })),
 
     /**
      * Voids one completed session: the history row goes, and the time and the session tally it

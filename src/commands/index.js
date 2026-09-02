@@ -62,6 +62,10 @@ export const commands = [
       .addStringOption((option) => option.setName('from').setDescription('Name to retire (pick from the list)').setRequired(true).setAutocomplete(true))
       .addStringOption((option) => option.setName('into').setDescription('Name to keep — pick one, or type a new one').setRequired(true).setAutocomplete(true))
       .addStringOption((option) => option.setName('reason').setDescription('Why — recorded in the audit log').setMaxLength(200)))
+    // The two read-only subcommands sit together at the end, away from the two that change
+    // something — `sessions` lists what was recorded, `session` (singular) voids one of them.
+    .addSubcommand((sub) => sub.setName('sessions').setDescription('List recent play sessions, including any running right now')
+      .addUserOption((option) => option.setName('member').setDescription('Only this member (defaults to the whole server)')))
     .addSubcommand((sub) => sub.setName('log').setDescription('Show recent corrections')
       .addUserOption((option) => option.setName('member').setDescription('Only this member (defaults to the whole server)')))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),

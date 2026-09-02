@@ -741,3 +741,89 @@ describe('server records', () => {
     assert.equal(longestSession.duration_seconds, 5 * HOUR_SECONDS);
   });
 });
+
+describe('the session log', () => {
+  test('lists completed sessions newest first, with the id the void command takes', () => {
+    playSession(db, GUILD, USER, 'PEAK', T0, HOUR);
+    playSession(db, GUILD, USER, 'OtherGame', T0 + DAY, 2 * HOUR);
+    const [newest, older] = db.getSessionLog(GUILD);
+    assert.equal(newest.game_name, 'OtherGame');
+    assert.equal(newest.duration_seconds, 2 * 60 * 60);
+    assert.equal(older.game_name, 'PEAK');
+    assert.equal(db.getPlaySession(newest.id).game_name, 'OtherGame');
+  });
+
+  test('a null member lists the whole guild, a named one only their own', () => {
+    playSession(db, GUILD, USER, 'PEAK', T0, HOUR);
+    playSession(db, GUILD, 'user-2', 'OtherGame', T0 + HOUR, HOUR);
+    assert.equal(db.getSessionLog(GUILD).length, 2);
+    const mine = db.getSessionLog(GUILD, USER);
+    assert.equal(mine.length, 1);
+    assert.equal(mine[0].user_id, USER);
+  });
+
+  test('honours its limit and never crosses a guild boundary', () => {
+    for (let index = 0; index < 4; index += 1) {
+      playSession(db, GUILD, USER, `Game${index}`, T0 + index * DAY, HOUR);
+    }
+    playSession(db, OTHER_GUILD, USER, 'Elsewhere', T0 + 5 * DAY, HOUR);
+    const rows = db.getSessionLog(GUILD, null, 2);
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((row) => row.game_name), ['Game3', 'Game2']);
+    assert.equal(db.getSessionLog(OTHER_GUILD).length, 1);
+  });
+
+  test('an empty guild lists nothing rather than throwing', () => {
+    assert.deepEqual(db.getSessionLog(GUILD), []);
+    assert.deepEqual(db.getRunningSessions(GUILD), []);
+  });
+});
+
+describe('running sessions', () => {
+  test('report the time elapsed so far, oldest session first', () => {
+    db.startSession(GUILD, USER, 'PEAK', T0);
+    db.startSession(GUILD, 'user-2', 'OtherGame', T0 + HOUR);
+    const running = db.getRunningSessions(GUILD, null, 10, T0 + 90 * MINUTE);
+    assert.deepEqual(running.map((session) => session.userId), [USER, 'user-2']);
+    assert.equal(running[0].elapsedSeconds, 90 * 60);
+    assert.equal(running[0].gameName, 'PEAK');
+    assert.equal(running[0].startedAt, T0);
+    assert.equal(running[1].elapsedSeconds, 30 * 60);
+  });
+
+  test('an idle session stops accruing and says when it went idle', () => {
+    db.startSession(GUILD, USER, 'PEAK', T0);
+    db.pauseSession(GUILD, USER, T0 + 30 * MINUTE);
+    const [session] = db.getRunningSessions(GUILD, null, 10, T0 + 3 * HOUR);
+    assert.equal(session.pausedAt, T0 + 30 * MINUTE);
+    assert.equal(session.elapsedSeconds, 30 * 60);
+  });
+
+  test('the elapsed time matches the duration the closed session records', () => {
+    db.startSession(GUILD, USER, 'PEAK', T0);
+    db.pauseSession(GUILD, USER, T0 + 30 * MINUTE);
+    db.resumeSession(GUILD, USER, T0 + 90 * MINUTE);
+    const [running] = db.getRunningSessions(GUILD, null, 10, T0 + 2 * HOUR);
+    db.stopSession(GUILD, USER, T0 + 2 * HOUR);
+    const [recorded] = db.getSessionLog(GUILD);
+    assert.equal(running.elapsedSeconds, recorded.duration_seconds);
+  });
+
+  test('a session that closes leaves the running list for the recorded one', () => {
+    db.startSession(GUILD, USER, 'PEAK', T0);
+    assert.equal(db.getRunningSessions(GUILD, USER).length, 1);
+    assert.equal(db.getSessionLog(GUILD, USER).length, 0);
+    db.stopSession(GUILD, USER, T0 + HOUR);
+    assert.equal(db.getRunningSessions(GUILD, USER).length, 0);
+    assert.equal(db.getSessionLog(GUILD, USER).length, 1);
+  });
+
+  test('only the named member is listed, and only in their own guild', () => {
+    db.startSession(GUILD, USER, 'PEAK', T0);
+    db.startSession(GUILD, 'user-2', 'OtherGame', T0);
+    db.startSession(OTHER_GUILD, USER, 'Elsewhere', T0);
+    assert.equal(db.getRunningSessions(GUILD).length, 2);
+    assert.deepEqual(db.getRunningSessions(GUILD, USER).map((s) => s.gameName), ['PEAK']);
+    assert.deepEqual(db.getRunningSessions(OTHER_GUILD, USER).map((s) => s.gameName), ['Elsewhere']);
+  });
+});
