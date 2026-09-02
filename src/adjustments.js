@@ -22,7 +22,11 @@
  * member has, which several achievements count — see `mergeGames`.
  */
 
-export const ADJUSTMENT_KINDS = { TIME: 'time', SESSION: 'session', MERGE: 'merge' };
+export const ADJUSTMENT_KINDS = { TIME: 'time', SESSION: 'session', MERGE: 'merge', CAP: 'cap' };
+
+/** No member initiated a cap claw-back, so it is attributed to the same sentinel `purgeMember` uses
+ * for a stat_adjustments row with no accountable actor. */
+export const SYSTEM_ACTOR_ID = '0';
 
 /**
  * Adds or removes time on one game for one member.
@@ -38,6 +42,31 @@ export function applyTimeAdjustment(db, { guildId, userId, actorId, gameName, de
     db.recordAdjustment({
       guildId, userId, actorId, kind: ADJUSTMENT_KINDS.TIME, gameName,
       deltaSeconds: result.appliedSeconds, reason,
+    }, now);
+  }
+  return result;
+}
+
+/**
+ * Claws back the seconds a session banked past `MAX_SESSION_HOURS` before the checkpoint tick
+ * caught it. `closeSessionsExceeding` already writes the play_sessions row at the cap; this is the
+ * other half — the same excess still sitting in game_stats/member_stats from the continuous
+ * checkpointing that ran while the session was still active. Uses the same clamped subtraction as
+ * a manual `/adjust` correction, and leaves the same kind of stat_adjustments trail so the drop is
+ * explicable rather than a silent total change.
+ *
+ * A no-op (`excessSeconds` of 0, the ordinary case — the tick usually catches the cap within a
+ * minute) writes nothing, same reasoning as a manual adjustment that clamped to zero.
+ */
+export function clawBackSessionCap(db, { guildId, userId, gameName, excessSeconds, capSeconds }, now = Date.now()) {
+  if (!excessSeconds) return null;
+  const result = db.adjustPlaytime(guildId, userId, gameName, -excessSeconds);
+  if (result.appliedSeconds !== 0) {
+    db.recordAdjustment({
+      guildId, userId, actorId: SYSTEM_ACTOR_ID, kind: ADJUSTMENT_KINDS.CAP, gameName,
+      deltaSeconds: result.appliedSeconds,
+      reason: `Session ran past the ${Math.floor(capSeconds / 3600)}h cap; the checkpoint tick was `
+        + `late, so ${Math.floor(excessSeconds / 60)}m banked before it caught up was clawed back.`,
     }, now);
   }
   return result;

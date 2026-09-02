@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession, mergeGames } from '../src/adjustments.js';
+import {
+  ADJUSTMENT_KINDS, SYSTEM_ACTOR_ID, applyTimeAdjustment, voidSession, mergeGames, clawBackSessionCap,
+} from '../src/adjustments.js';
 import { tempDatabase, playSession, HOUR, MINUTE, T0 } from './helpers.js';
 
 const G = 'guild-1';
@@ -201,6 +203,44 @@ test('the game picker offers a running session before it has banked any time', (
   withDb((db) => {
     db.startSession(G, U, 'Just Launched', T0);
     assert.deepEqual(db.getMemberGameNames(G, U), ['Just Launched']);
+  });
+});
+
+/**
+ * The session cap's automatic claw-back — issue #21. `closeSessionsExceeding` already writes the
+ * play_sessions row at the cap; this is what reconciles game_stats/member_stats with it when the
+ * checkpoint tick ran late enough that the excess had already been banked in full.
+ */
+
+test('claws back the excess and logs it against no one in particular', () => {
+  withDb((db) => {
+    // Simulate what continuous checkpointing would have banked before a late tick caught the cap:
+    // 15h actually played, only 12h of which should count.
+    playSession(db, G, U, 'PEAK', T0, 15 * HOUR);
+    const result = clawBackSessionCap(db, {
+      guildId: G, userId: U, gameName: 'PEAK', excessSeconds: 3 * 3600, capSeconds: 12 * 3600,
+    }, T0);
+    assert.equal(result.appliedSeconds, -3 * 3600);
+    assert.equal(db.getTotalSeconds(G, U), 12 * 3600);
+    assert.equal(db.getGameStatsTotal(G, U, 'PEAK'), 12 * 3600);
+
+    const [row] = db.getAdjustments(G, U);
+    assert.equal(row.kind, ADJUSTMENT_KINDS.CAP);
+    assert.equal(row.actor_id, SYSTEM_ACTOR_ID);
+    assert.equal(row.delta_seconds, -3 * 3600);
+    assert.match(row.reason, /12h cap/);
+  });
+});
+
+test('the ordinary case — no overrun — claws nothing back and logs nothing', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'PEAK', T0, 12 * HOUR);
+    const result = clawBackSessionCap(db, {
+      guildId: G, userId: U, gameName: 'PEAK', excessSeconds: 0, capSeconds: 12 * 3600,
+    }, T0);
+    assert.equal(result, null);
+    assert.deepEqual(db.getAdjustments(G, U), []);
+    assert.equal(db.getTotalSeconds(G, U), 12 * 3600);
   });
 });
 

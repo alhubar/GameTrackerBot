@@ -596,6 +596,20 @@ describe('the session cap', () => {
     db.resumeSession(GUILD, USER, T0 + 20 * HOUR);
     assert.deepEqual(db.closeSessionsExceeding(12 * HOUR, T0 + 21 * HOUR), []);
   });
+
+  test('a late tick still writes the row at the cap, not the full span', () => {
+    // The checkpoint loop is supposed to catch a runaway session within a minute of the cap. This
+    // simulates it running 3 hours late instead (a stalled event loop, a sleeping host).
+    db.startSession(GUILD, USER, 'PEAK', T0);
+    const closed = db.closeSessionsExceeding(12 * HOUR, T0 + 15 * HOUR);
+    assert.equal(closed[0].completed.durationSeconds, 12 * 3600, 'the row is capped, not the raw 15h span');
+    assert.equal(closed[0].completed.excessSeconds, 3 * 3600, 'the overrun is reported so the caller can claw it back');
+    const [session] = db.getRecentSessions(GUILD, USER);
+    assert.equal(session.duration_seconds, 12 * 3600);
+    // closeSessionsExceeding only writes the row at the cap — reconciling the aggregates (which
+    // continuous checkpointing already banked in full) is the caller's job, not this function's.
+    assert.equal(db.getTotalSeconds(GUILD, USER), 15 * 3600);
+  });
 });
 
 describe('monthly leaderboard counts live sessions', () => {

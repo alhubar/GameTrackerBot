@@ -786,7 +786,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
     return Math.max(0, Math.floor(((session.paused_at ?? now) - session.last_checkpoint_at) / 1000));
   }
 
-  function closeSession(guildId, userId, now = Date.now()) {
+  function closeSession(guildId, userId, now = Date.now(), capSeconds = Infinity) {
     const session = getSession.get(guildId, userId);
     if (!session) return null;
     // Only the slice since the last checkpoint is new; everything before it was already banked by
@@ -798,12 +798,22 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       addTime.run(guildId, userId, unrecordedSeconds);
       addGameSeconds.run(guildId, userId, session.game_name, unrecordedSeconds);
     }
-    const totalSeconds = Math.max(0, Math.floor(activeElapsedMs(session, now) / 1000));
+    // capSeconds only bites from closeSessionsExceeding: the checkpoint tick that notices a runaway
+    // session does not always land within a minute of it crossing the cap (host sleep, a blocked
+    // event loop, a stalled interval), so the raw span can run well past the limit. Clamping here
+    // means the play_sessions row, the duration handed to session-length achievements, and the
+    // aggregates all agree on the same capped number instead of three different ones — the caller
+    // gets `excessSeconds` back so it can claw that part out of game_stats/member_stats too.
+    const rawSeconds = Math.max(0, Math.floor(activeElapsedMs(session, now) / 1000));
+    const totalSeconds = Math.min(rawSeconds, capSeconds);
     let completed = null;
     if (totalSeconds) {
       bumpGameSessionCount.run(guildId, userId, session.game_name);
       saveCompletedSession.run(guildId, userId, session.game_name, session.started_at, now, totalSeconds);
-      completed = { gameName: session.game_name, startedAt: session.started_at, endedAt: now, durationSeconds: totalSeconds };
+      completed = {
+        gameName: session.game_name, startedAt: session.started_at, endedAt: now,
+        durationSeconds: totalSeconds, excessSeconds: rawSeconds - totalSeconds,
+      };
     }
     removeSession.run(guildId, userId);
     return completed;
@@ -1048,13 +1058,19 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
      * Hard cap. Closes any session whose *active* time has run past the limit, which is the only
      * defence against a member who never goes idle (a jiggler, or a client that just never reports
      * it). Returns the closed sessions so the caller can still run end-of-session achievements.
+     *
+     * The row is written at the cap, not the raw span — see `closeSession`'s `capSeconds` param.
+     * Whatever ran over comes back as `completed.excessSeconds`; this function does not itself
+     * touch game_stats/member_stats, so it is the caller's job to claw that part back (see
+     * `clawBackSessionCap` in adjustments.js).
      */
     closeSessionsExceeding(maxActiveMs, now = Date.now()) {
+      const capSeconds = Math.floor(maxActiveMs / 1000);
       const closed = [];
       for (const row of db.prepare('SELECT guild_id, user_id FROM active_sessions').all()) {
         const session = getSession.get(row.guild_id, row.user_id);
         if (!session || activeElapsedMs(session, now) < maxActiveMs) continue;
-        const completed = closeSession(row.guild_id, row.user_id, now);
+        const completed = closeSession(row.guild_id, row.user_id, now, capSeconds);
         if (completed) closed.push({ guildId: row.guild_id, userId: row.user_id, completed });
       }
       return closed;

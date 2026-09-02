@@ -18,6 +18,7 @@ import {
 import { memberRef } from './log.js';
 import { formatPlayTime, rankForSeconds } from './ranks.js';
 import { evaluateOngoingSession, evaluateSessionEnd, evaluateTouchGrass } from './achievements.js';
+import { clawBackSessionCap } from './adjustments.js';
 import { collectDueReminders, rollRecurringEvents } from './events.js';
 import { describeRawPresence } from './presenceSpike.js';
 import { isBackupDue, runBackup } from './backup.js';
@@ -179,6 +180,14 @@ setInterval(async () => {
   // by their next presence event; nobody keeps banking hours off a game left running unattended.
   if (MAX_SESSION_MS) {
     for (const { guildId, userId, completed } of db.closeSessionsExceeding(MAX_SESSION_MS, now)) {
+      // Ordinarily excessSeconds is 0 — this tick runs every 60s and catches the cap within a
+      // minute. It is only nonzero after a late tick (host sleep, a blocked event loop), and has to
+      // run whether or not the member is still cached: the seconds were already banked into
+      // game_stats/member_stats regardless of whether achievements get evaluated below.
+      clawBackSessionCap(db, {
+        guildId, userId, gameName: completed.gameName,
+        excessSeconds: completed.excessSeconds, capSeconds: MAX_SESSION_MS / 1000,
+      }, now);
       const member = client.guilds.cache.get(guildId)?.members.cache.get(userId);
       if (!member) continue;
       const unlocked = evaluateSessionEnd(db, guildId, userId, completed, now);
