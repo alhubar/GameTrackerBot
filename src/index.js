@@ -179,17 +179,25 @@ setInterval(async () => {
   // Retire sessions that have run past the cap. Anyone genuinely still playing is picked up again
   // by their next presence event; nobody keeps banking hours off a game left running unattended.
   if (MAX_SESSION_MS) {
-    for (const { guildId, userId, completed } of db.closeSessionsExceeding(MAX_SESSION_MS, now)) {
+    for (const { guildId, userId, completed, capSeconds } of db.closeSessionsExceeding(MAX_SESSION_MS, now)) {
       // Ordinarily excessSeconds is 0 — this tick runs every 60s and catches the cap within a
       // minute. It is only nonzero after a late tick (host sleep, a blocked event loop), and has to
       // run whether or not the member is still cached: the seconds were already banked into
       // game_stats/member_stats regardless of whether achievements get evaluated below.
-      clawBackSessionCap(db, {
+      const clawedBack = clawBackSessionCap(db, {
         guildId, userId, gameName: completed.gameName,
-        excessSeconds: completed.excessSeconds, capSeconds: MAX_SESSION_MS / 1000,
+        excessSeconds: completed.excessSeconds, capSeconds,
       }, now);
       const member = client.guilds.cache.get(guildId)?.members.cache.get(userId);
       if (!member) continue;
+      // A claw-back lowers a total, so the rank has to move with it — the same rule /adjust follows
+      // after a manual subtraction. It matters most right here: checkpointAll ran earlier in this
+      // same tick and reconciled against the *over-banked* total, so it may have just handed out
+      // (and announced) a rank bought with the very seconds being taken back. announceRankUp is a
+      // no-op on the way down, so nobody is told they were demoted.
+      if (clawedBack?.appliedSeconds) {
+        await reconcileRank(member, rankForSeconds(clawedBack.totalBefore)).catch(console.error);
+      }
       const unlocked = evaluateSessionEnd(db, guildId, userId, completed, now);
       await announceAchievements(member, unlocked).catch(console.error);
     }

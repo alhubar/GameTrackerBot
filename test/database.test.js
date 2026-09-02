@@ -604,6 +604,7 @@ describe('the session cap', () => {
     const closed = db.closeSessionsExceeding(12 * HOUR, T0 + 15 * HOUR);
     assert.equal(closed[0].completed.durationSeconds, 12 * 3600, 'the row is capped, not the raw 15h span');
     assert.equal(closed[0].completed.excessSeconds, 3 * 3600, 'the overrun is reported so the caller can claw it back');
+    assert.equal(closed[0].capSeconds, 12 * 3600, 'and the cap it was measured against, so the caller never re-derives it');
     const [session] = db.getRecentSessions(GUILD, USER);
     assert.equal(session.duration_seconds, 12 * 3600);
     // closeSessionsExceeding only writes the row at the cap — reconciling the aggregates (which

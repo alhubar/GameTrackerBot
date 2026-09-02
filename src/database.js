@@ -1060,9 +1060,10 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
      * it). Returns the closed sessions so the caller can still run end-of-session achievements.
      *
      * The row is written at the cap, not the raw span — see `closeSession`'s `capSeconds` param.
-     * Whatever ran over comes back as `completed.excessSeconds`; this function does not itself
-     * touch game_stats/member_stats, so it is the caller's job to claw that part back (see
-     * `clawBackSessionCap` in adjustments.js).
+     * Whatever ran over comes back as `completed.excessSeconds`, and the cap it was measured
+     * against comes back beside it, so the caller never re-derives it from `maxActiveMs` and the
+     * two can't drift apart. This function does not itself touch game_stats/member_stats, so
+     * clawing that part back is the caller's job (see `clawBackSessionCap` in adjustments.js).
      */
     closeSessionsExceeding(maxActiveMs, now = Date.now()) {
       const capSeconds = Math.floor(maxActiveMs / 1000);
@@ -1071,7 +1072,7 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
         const session = getSession.get(row.guild_id, row.user_id);
         if (!session || activeElapsedMs(session, now) < maxActiveMs) continue;
         const completed = closeSession(row.guild_id, row.user_id, now, capSeconds);
-        if (completed) closed.push({ guildId: row.guild_id, userId: row.user_id, completed });
+        if (completed) closed.push({ guildId: row.guild_id, userId: row.user_id, completed, capSeconds });
       }
       return closed;
     },

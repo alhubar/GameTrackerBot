@@ -244,6 +244,21 @@ test('the ordinary case — no overrun — claws nothing back and logs nothing',
   });
 });
 
+test('the audit row names a fractional cap honestly, and the overrun the way the bot writes hours', () => {
+  withDb((db) => {
+    // MAX_SESSION_HOURS is a Number rather than an integer, so a 12.5h cap has to survive into the
+    // permanent row: an audit line naming a limit the bot does not actually enforce is worse than
+    // no line at all, and this row is never edited afterwards.
+    playSession(db, G, U, 'PEAK', T0, 14 * HOUR);
+    clawBackSessionCap(db, {
+      guildId: G, userId: U, gameName: 'PEAK', excessSeconds: 90 * 60, capSeconds: 12.5 * 3600,
+    }, T0);
+    const [row] = db.getAdjustments(G, U);
+    assert.match(row.reason, /12\.5h cap/);
+    assert.match(row.reason, /1h 30m banked/);
+  });
+});
+
 /**
  * `/adjust merge` — one game recorded under two names.
  *

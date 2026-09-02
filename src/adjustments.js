@@ -22,6 +22,8 @@
  * member has, which several achievements count — see `mergeGames`.
  */
 
+import { formatHours, formatPlayTime } from './ranks.js';
+
 export const ADJUSTMENT_KINDS = { TIME: 'time', SESSION: 'session', MERGE: 'merge', CAP: 'cap' };
 
 /** No member initiated a cap claw-back, so it is attributed to the same sentinel `purgeMember` uses
@@ -57,6 +59,9 @@ export function applyTimeAdjustment(db, { guildId, userId, actorId, gameName, de
  *
  * A no-op (`excessSeconds` of 0, the ordinary case — the tick usually catches the cap within a
  * minute) writes nothing, same reasoning as a manual adjustment that clamped to zero.
+ *
+ * Reconciling the rank afterwards is the caller's job, exactly as it is for `/adjust` — the
+ * returned `totalBefore` is the total to read the old rank off.
  */
 export function clawBackSessionCap(db, { guildId, userId, gameName, excessSeconds, capSeconds }, now = Date.now()) {
   if (!excessSeconds) return null;
@@ -65,8 +70,8 @@ export function clawBackSessionCap(db, { guildId, userId, gameName, excessSecond
     db.recordAdjustment({
       guildId, userId, actorId: SYSTEM_ACTOR_ID, kind: ADJUSTMENT_KINDS.CAP, gameName,
       deltaSeconds: result.appliedSeconds,
-      reason: `Session ran past the ${Math.floor(capSeconds / 3600)}h cap; the checkpoint tick was `
-        + `late, so ${Math.floor(excessSeconds / 60)}m banked before it caught up was clawed back.`,
+      reason: `Session ran past the ${formatHours(capSeconds / 3600)} cap; the checkpoint tick was `
+        + `late, so ${formatPlayTime(excessSeconds)} banked before it caught up was clawed back.`,
     }, now);
   }
   return result;
