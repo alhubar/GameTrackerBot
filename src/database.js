@@ -343,6 +343,17 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       UNION ALL SELECT DISTINCT game_name, 0 FROM active_sessions WHERE guild_id = ?
     ) GROUP BY game_name ORDER BY total_seconds DESC, game_name LIMIT ?
   `);
+  // Every name the guild holds, with what it holds — the sweep `/adjust duplicates` compares, where
+  // the picker above only needs the names. The player count is what separates a genuine split (one
+  // member's misspelling against six members' game) from two real games, so it is counted here
+  // rather than left to a second query per name. A running session's game is included for the same
+  // reason the picker includes it: the mis-recorded name is often the one on the clock right now.
+  const getGuildGameTotalsStmt = db.prepare(`
+    SELECT game_name, SUM(total_seconds) AS total_seconds, COUNT(DISTINCT user_id) AS player_count FROM (
+      SELECT user_id, game_name, total_seconds FROM game_stats WHERE guild_id = ?
+      UNION ALL SELECT user_id, game_name, 0 FROM active_sessions WHERE guild_id = ?
+    ) GROUP BY game_name ORDER BY total_seconds DESC, game_name LIMIT ?
+  `);
   // Everyone with anything at all under a name, including a member whose only trace of it is the
   // session running right now — they have no game_stats row until its first checkpoint.
   const getGameHoldersStmt = db.prepare(`
@@ -1144,6 +1155,19 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       getMemberGameNamesStmt.all(guildId, userId, guildId, userId, limit).map((row) => row.game_name),
     getGuildGameNames: (guildId, limit = 25) =>
       getGuildGameNamesStmt.all(guildId, guildId, limit).map((row) => row.game_name),
+    /**
+     * Every game name in the guild with the time and the number of members behind it, most-played
+     * first. The limit is a guard against pathological data rather than a page size — the duplicate
+     * sweep compares every name against every other, so it is bounded on the way in; a guild whose
+     * library is genuinely larger than the cap gets told the sweep was partial rather than quietly
+     * given less.
+     */
+    getGuildGameTotals: (guildId, limit = 1000) =>
+      getGuildGameTotalsStmt.all(guildId, guildId, limit).map((row) => ({
+        name: row.game_name,
+        totalSeconds: row.total_seconds,
+        playerCount: row.player_count,
+      })),
     getRecentSessions: (guildId, userId, limit = 25) => getRecentSessionsStmt.all(guildId, userId, limit),
     /** Completed sessions, newest first. `userId` null means the whole guild. */
     getSessionLog: (guildId, userId = null, limit = 10) =>

@@ -62,10 +62,15 @@ export const commands = [
       .addStringOption((option) => option.setName('from').setDescription('Name to retire (pick from the list)').setRequired(true).setAutocomplete(true))
       .addStringOption((option) => option.setName('into').setDescription('Name to keep — pick one, or type a new one').setRequired(true).setAutocomplete(true))
       .addStringOption((option) => option.setName('reason').setDescription('Why — recorded in the audit log').setMaxLength(200)))
-    // The two read-only subcommands sit together at the end, away from the two that change
-    // something — `sessions` lists what was recorded, `session` (singular) voids one of them.
+    // The read-only subcommands sit together at the end, away from the three that change something,
+    // and each is the reading half of one of them: `sessions` lists what `session` (singular) voids,
+    // `duplicates` finds what `merge` folds together, `log` shows what all of them did.
     .addSubcommand((sub) => sub.setName('sessions').setDescription('List recent play sessions, including any running right now')
       .addUserOption((option) => option.setName('member').setDescription('Only this member (defaults to the whole server)')))
+    // No options at all: the sweep is the whole server's names against each other, and narrowing it
+    // to one member would hide exactly the split it exists to find — one member's misspelling
+    // sitting beside everybody else's spelling of the same game.
+    .addSubcommand((sub) => sub.setName('duplicates').setDescription('Find game names that are probably the same game recorded twice'))
     .addSubcommand((sub) => sub.setName('log').setDescription('Show recent corrections')
       .addUserOption((option) => option.setName('member').setDescription('Only this member (defaults to the whole server)')))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),

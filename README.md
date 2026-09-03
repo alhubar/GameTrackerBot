@@ -242,6 +242,7 @@ case the default was overridden under **Server Settings → Integrations**.
 - **`/adjust session`** — void one bogus session outright, taking back the time and the session tally it credited.
 - **`/adjust merge`** — fold two spellings of one game into a single name, for everybody at once.
 - **`/adjust sessions`** — list what has actually been recorded, for one member or the whole server.
+- **`/adjust duplicates`** — list game names that look like the same game recorded twice.
 - **`/adjust log`** — the audit trail, for one member or the whole server.
 
 `/adjust sessions` is the read-only half and the usual first step: it lists the most recent completed sessions with
@@ -288,6 +289,23 @@ Achievements already unlocked are kept, as with every other correction, and anyt
 next time that member plays.
 
 It cannot be undone — merging back would not restore the split — so take a `/backup` first if you are unsure.
+
+### Finding a split in the first place
+
+Somebody still has to *notice* the split, and nobody goes looking. `/adjust duplicates` sweeps every game name in the
+server against every other and lists the pairs worth a look, with the time and the number of members behind each name
+so it is obvious which spelling is the real one. It is read-only — it never merges anything, because a merge is a
+guild-wide judgement with no undo.
+
+Suggestions come in three kinds, labelled because they are not equally trustworthy. Names that are **the same once
+case, punctuation, spacing and accents are ignored** are a certainty rather than a guess — including the ones that
+differ only by a stray space, which is invisible everywhere else in Discord. Names **a character or two apart** are
+usually a typo. Names where **one is the other plus words** catch a re-title like Realm Royale → Realm Royale
+Reforged, and are the loosest of the three: Fallout and Fallout Shelter land there too.
+
+**A difference in numbers is treated as a sequel, never a typo**, so Diablo II and Diablo III, Portal and Portal 2,
+F1 23 and F1 24 are never suggested — arabic and roman numerals alike. And the case that motivated merging in the
+first place, a rename sharing no words with the old title, cannot be found this way at all. That one needs a human.
 
 ## Maintenance
 

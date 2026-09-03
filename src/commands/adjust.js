@@ -4,6 +4,7 @@ import { CARD_ACCENT_COLOR } from '../config.js';
 import { RANKS, formatPlayTime, rankForSeconds } from '../ranks.js';
 import { reconcileRank } from '../tracking.js';
 import { ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession, mergeGames } from '../adjustments.js';
+import { DUPLICATE_REASONS, findDuplicateGameNames } from '../gameNames.js';
 
 /**
  * `/adjust` — the admin escape hatch for stats that do not match reality.
@@ -26,11 +27,34 @@ const GAME_NAME_MAX = 60;
 // Discord caps an autocomplete choice name at 100 characters and a response at 25 choices.
 const CHOICE_NAME_MAX = 100;
 const CHOICE_LIMIT = 25;
+// Ten suggestions is already more merges than anybody does in one sitting, and the list is ordered
+// so the ones worth doing first are the ones shown. The scan limit bounds an all-pairs comparison
+// against pathological data rather than paging it — a real library is a few dozen names.
+const DUPLICATE_LIMIT = 10;
+const DUPLICATE_SCAN_LIMIT = 1000;
+// Discord caps an embed description at 4096 and rejects the whole message for one character over,
+// so the sweep stops filling well short of it rather than risking a reply that never arrives.
+const DESCRIPTION_BUDGET = 3800;
+
+/** Ranked, and labelled with how far each class can be trusted, because they differ a lot. */
+const REASON_LABELS = {
+  [DUPLICATE_REASONS.IDENTICAL]: '🟢 **The same name** apart from case, punctuation or spacing',
+  [DUPLICATE_REASONS.NEAR]: '🟡 **A character or two apart** — usually a typo',
+  [DUPLICATE_REASONS.EXTENDS]: '🟠 **One name plus words** — a re-title or edition, or two different games',
+};
+
+/** Said on every reply, empty or not: the case this cannot see is the case that motivated `merge`. */
+const RENAME_BLIND_SPOT = '_A rename sharing no words with the old title — Counter-Strike: Global '
+  + 'Offensive → Counter-Strike 2 — cannot be spotted this way. Those still need an eye on them._';
 
 const signed = (seconds) => `${seconds < 0 ? '−' : '+'}${formatPlayTime(Math.abs(seconds))}`;
 const rankName = (index) => (index >= 0 ? RANKS[index] : 'no rank');
 const stamp = (ms, style = 'f') => `<t:${Math.floor(ms / 1000)}:${style}>`;
 const gameLabel = (name) => (name.length > GAME_NAME_MAX ? `${name.slice(0, GAME_NAME_MAX - 1)}…` : name);
+// A code span is the only rendering that shows a stray space, which is exactly the difference the
+// duplicate sweep exists to surface. A backtick inside the name would end the span early, so those
+// few names fall back to bold and lose the whitespace hint rather than breaking the whole line.
+const nameSpan = (name) => (name.includes('`') ? `**${name}**` : `\`${name}\``);
 
 function rankLine(totalBefore, totalAfter) {
   const before = rankForSeconds(totalBefore);
@@ -296,6 +320,80 @@ async function handleSessions(interaction) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+/**
+ * `/adjust duplicates` — the read half of `merge`, the same way `sessions` is the read half of
+ * `session`.
+ *
+ * Read-only and never an automatic merge. A merge is a guild-wide judgement that a spelling is
+ * wrong for everybody, and it has no undo — `play_sessions` and `active_sessions` are rewritten
+ * along with the aggregates, and the `stat_adjustments` row recording it is never edited. Noticing
+ * is safe; acting is not, so this stops at naming the pair and the command that would fix it.
+ *
+ * The three classes are labelled rather than blended into one score, because they are not equally
+ * trustworthy — see `gameNames.js`. What none of them catch is a rename that shares no words with
+ * the old title, which is the case that motivated `/adjust merge` in the first place; the footer
+ * says so, since a list that finds nothing otherwise reads as "there is nothing to find".
+ */
+async function handleDuplicates(interaction) {
+  const games = db.getGuildGameTotals(interaction.guild.id, DUPLICATE_SCAN_LIMIT);
+  const suggestions = findDuplicateGameNames(games);
+
+  if (!games.length) {
+    await interaction.editReply('No games are recorded in this server yet, so there is nothing to compare.');
+    return;
+  }
+  if (!suggestions.length) {
+    await interaction.editReply(
+      `Nothing looks like a duplicate among the ${games.length} game `
+      + `${games.length === 1 ? 'name' : 'names'} recorded here.\n${RENAME_BLIND_SPOT}`,
+    );
+    return;
+  }
+
+  const blocks = suggestions.map((suggestion) => [
+    REASON_LABELS[suggestion.reason],
+    ...suggestion.names.map((entry) => {
+      const players = `${entry.playerCount} ${entry.playerCount === 1 ? 'player' : 'players'}`;
+      // The one difference invisible in a rendered message is the one this exists to catch: a stray
+      // space reads as an identical name with mysteriously separate totals. `/adjust merge`
+      // deliberately does not trim its `from`, so the name stays mergeable exactly as stored.
+      const edges = entry.name !== entry.name.trim() ? ' · ⚠️ stray leading or trailing space' : '';
+      return `└ ${nameSpan(gameLabel(entry.name))} — ${formatPlayTime(entry.totalSeconds)}, ${players}${edges}`;
+    }),
+  ]);
+
+  // A group can hold any number of spellings and a name runs to 60 characters, so ten of them can
+  // pass the 4096 an embed description allows — which Discord rejects outright, leaving a log line
+  // and no reply at all. Dropping the weakest suggestions is the graceful half of that; the footer
+  // says how many went. One block always goes in, however long it is: a truncated line beats none.
+  const shown = [];
+  let budget = DESCRIPTION_BUDGET - RENAME_BLIND_SPOT.length;
+  for (const block of blocks) {
+    const cost = block.join('\n').length + 2;
+    if (shown.length >= DUPLICATE_LIMIT || (shown.length && cost > budget)) break;
+    shown.push(block);
+    budget -= cost;
+  }
+  const lines = shown.flatMap((block, index) => (index ? ['', ...block] : block));
+
+  const footer = [
+    suggestions.length > shown.length
+      ? `Showing the ${shown.length} strongest of ${suggestions.length}.`
+      : `${suggestions.length} ${suggestions.length === 1 ? 'suggestion' : 'suggestions'} from ${games.length} names.`,
+    'Each group leads with the name holding the most time — the obvious one to keep.',
+    'Nothing has been changed. Fold one in with /adjust merge, which cannot be undone.',
+  ];
+  // Reported rather than hidden: a partial sweep that says nothing looks exactly like a clean one.
+  if (games.length >= DUPLICATE_SCAN_LIMIT) footer.push(`Only the ${DUPLICATE_SCAN_LIMIT} most-played names were compared.`);
+
+  const embed = new EmbedBuilder()
+    .setColor(CARD_ACCENT_COLOR)
+    .setTitle('🔎 Possible duplicate game names')
+    .setDescription([...lines, '', RENAME_BLIND_SPOT].join('\n'))
+    .setFooter({ text: footer.join(' ') });
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleLog(interaction) {
   const user = interaction.options.getUser('member');
   const rows = db.getAdjustments(interaction.guild.id, user?.id ?? null, LOG_LIMIT);
@@ -329,7 +427,12 @@ async function handleLog(interaction) {
 }
 
 const SUBCOMMANDS = {
-  time: handleTime, session: handleSession, merge: handleMerge, sessions: handleSessions, log: handleLog,
+  time: handleTime,
+  session: handleSession,
+  merge: handleMerge,
+  sessions: handleSessions,
+  duplicates: handleDuplicates,
+  log: handleLog,
 };
 
 export async function handleAdjust(interaction) {
