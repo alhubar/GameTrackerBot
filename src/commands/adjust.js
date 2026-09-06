@@ -6,7 +6,7 @@ import { reconcileRank } from '../tracking.js';
 import {
   ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession, mergeGames, describeAdjustmentActor,
 } from '../adjustments.js';
-import { DUPLICATE_REASONS, findDuplicateGameNames } from '../gameNames.js';
+import { DUPLICATE_REASONS, DUPLICATE_SCAN_LIMIT, findDuplicateGameNames } from '../gameNames.js';
 
 /**
  * `/adjust` — the admin escape hatch for stats that do not match reality.
@@ -30,10 +30,9 @@ const GAME_NAME_MAX = 60;
 const CHOICE_NAME_MAX = 100;
 const CHOICE_LIMIT = 25;
 // Ten suggestions is already more merges than anybody does in one sitting, and the list is ordered
-// so the ones worth doing first are the ones shown. The scan limit bounds an all-pairs comparison
-// against pathological data rather than paging it — a real library is a few dozen names.
+// so the ones worth doing first are the ones shown. The scan bound that goes with it lives in
+// gameNames.js, because /health counts against the same limit this lists against.
 const DUPLICATE_LIMIT = 10;
-const DUPLICATE_SCAN_LIMIT = 1000;
 // Discord caps an embed description at 4096 and rejects the whole message for one character over,
 // so the sweep stops filling well short of it rather than risking a reply that never arrives.
 const DESCRIPTION_BUDGET = 3800;

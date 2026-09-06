@@ -45,6 +45,34 @@ export function isBackupDue(dir, now, hourUtc) {
   return !listBackups(dir).includes(backupFileName(now));
 }
 
+/**
+ * The day stamp of the newest copy on disk, or null when there are none.
+ *
+ * Here rather than in the caller so the filename scheme stays this module's business — the day is
+ * derivable from the name only because this file chose to put it there, and `/health` reading it
+ * back out with its own `slice` would quietly couple the two.
+ */
+export function newestBackupDay(dir) {
+  const [newest] = listBackups(dir);
+  return newest ? newest.slice(PREFIX.length, PREFIX.length + 10) : null;
+}
+
+/**
+ * The newest copy that *should* exist by now — what a health check compares what it found against.
+ *
+ * Not simply "today". Before `hourUtc` arrives, yesterday's copy is the newest one owed, and saying
+ * otherwise would report a perfectly healthy install as behind every single morning. `graceMs`
+ * extends that: the loop taking the copy runs hourly and `setInterval` counts from process start,
+ * so the copy legitimately lands anywhere in the hour *after* the hour arrives. Reporting a fault
+ * during that window would cry wolf once a day, which is the fastest way to make a status line
+ * worth ignoring.
+ */
+export function expectedBackupDay(now, hourUtc, graceMs = 0) {
+  const at = new Date(now);
+  const dueToday = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate(), hourUtc);
+  return now - dueToday >= graceMs ? backupDay(now) : backupDay(dueToday - 24 * 60 * 60 * 1000);
+}
+
 /** Trims to the newest `keep` copies. Returns the names removed. */
 export function rotateBackups(dir, keep) {
   const removed = listBackups(dir).slice(keep);

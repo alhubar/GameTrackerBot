@@ -131,6 +131,16 @@ const NEAR_TWO_EDITS_LENGTH = 12;
 /** An extension needs a base long enough to mean something — `Ark` extends half a library. */
 const EXTENDS_MIN_LENGTH = 5;
 
+/**
+ * How many names the sweep is willing to look at. It bounds an all-pairs comparison against
+ * pathological data rather than paging it — a real library is a few dozen names.
+ *
+ * Here rather than with either caller because it is a property of *this* comparison's cost, and
+ * because both `/adjust duplicates` and `/health` have to use the same number: a count on one
+ * surface that disagrees with the list on the other is a bug report waiting to happen.
+ */
+export const DUPLICATE_SCAN_LIMIT = 1000;
+
 const maxEdits = (shorter) => (shorter.length >= NEAR_TWO_EDITS_LENGTH ? 2 : 1);
 
 /**

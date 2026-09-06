@@ -4,7 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { backupFileName, isBackupDue, listBackups, mirrorBackup, rotateBackups, runBackup } from '../src/backup.js';
+import {
+  backupFileName, isBackupDue, listBackups, mirrorBackup, rotateBackups, runBackup,
+  newestBackupDay, expectedBackupDay,
+} from '../src/backup.js';
 import { tempDatabase, DAY, HOUR, T0 } from './helpers.js';
 
 const withDir = (body) => {
@@ -200,4 +203,83 @@ test('a failed backup leaves no partial file behind', async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/**
+ * What `/health` reads to answer "is the nightly copy actually being taken" — issue #26.
+ *
+ * The point of `expectedBackupDay` is that it is *not* "today". A healthy install has yesterday's
+ * copy and no more until `BACKUP_HOUR_UTC` comes round, so grading against today would report a
+ * fault every single morning, and a status that cries wolf daily is one nobody reads.
+ */
+test('the newest day is read back off the filenames, newest first', () => {
+  withDir((dir) => {
+    seed(dir, 'tracker-2026-09-04.sqlite', 'tracker-2026-09-06.sqlite', 'tracker-2026-09-05.sqlite');
+    assert.equal(newestBackupDay(dir), '2026-09-06');
+  });
+});
+
+test('no copies, and no directory at all, both read as nothing rather than throwing', () => {
+  withDir((dir) => {
+    assert.equal(newestBackupDay(dir), null);
+    assert.equal(newestBackupDay(join(dir, 'nope')), null);
+  });
+});
+
+test('a partial or unrelated file is not mistaken for the newest copy', () => {
+  withDir((dir) => {
+    seed(dir, 'tracker-2026-09-05.sqlite', 'tracker-2026-09-06.sqlite.partial', 'notes.txt');
+    assert.equal(newestBackupDay(dir), '2026-09-05');
+  });
+});
+
+test('before the configured hour, yesterday is still the newest copy owed', () => {
+  const at = (h) => Date.UTC(2026, 8, 6, h);
+  assert.equal(expectedBackupDay(at(3), 4), '2026-09-05');
+  assert.equal(expectedBackupDay(at(0), 4), '2026-09-05');
+});
+
+test('once the hour has passed, today is owed', () => {
+  assert.equal(expectedBackupDay(Date.UTC(2026, 8, 6, 4), 4), '2026-09-06');
+  assert.equal(expectedBackupDay(Date.UTC(2026, 8, 6, 23), 4), '2026-09-06');
+});
+
+/**
+ * The loop checks hourly and setInterval counts from process start, so the copy lands anywhere in
+ * the hour after the hour arrives. Without the grace, every install would show a fault for that
+ * window daily.
+ */
+test('the grace keeps yesterday owed while the hourly check is still coming round', () => {
+  const justAfter = Date.UTC(2026, 8, 6, 4) + 30 * 60_000;
+  assert.equal(expectedBackupDay(justAfter, 4, 2 * HOUR), '2026-09-05');
+  assert.equal(expectedBackupDay(justAfter + 2 * HOUR, 4, 2 * HOUR), '2026-09-06');
+});
+
+test('the grace can push the expectation back over a month boundary', () => {
+  // 00:30 on the 1st with an hour-0 schedule and two hours of grace: what is owed is the 31st.
+  assert.equal(expectedBackupDay(Date.UTC(2026, 9, 1, 0, 30), 0, 2 * HOUR), '2026-09-30');
+});
+
+test('an hour-0 schedule before midnight-plus-grace still owes yesterday', () => {
+  assert.equal(expectedBackupDay(Date.UTC(2026, 8, 6, 1), 0, 2 * HOUR), '2026-09-05');
+  assert.equal(expectedBackupDay(Date.UTC(2026, 8, 6, 3), 0, 2 * HOUR), '2026-09-06');
+});
+
+/**
+ * The two halves have to agree, or `/health` reports a missed night on an install the loop is
+ * perfectly happy with. Walking a day in ten-minute steps: whenever a copy has been taken for
+ * every day the loop considered due, what is expected must already be on disk.
+ */
+test('what health expects is never ahead of what the loop has had a chance to take', () => {
+  withDir((dir) => {
+    mkdirSync(dir, { recursive: true });
+    const hourUtc = 4;
+    for (let ms = Date.UTC(2026, 8, 5); ms < Date.UTC(2026, 8, 8); ms += 10 * 60_000) {
+      if (isBackupDue(dir, ms, hourUtc)) seed(dir, backupFileName(ms));
+      const expected = expectedBackupDay(ms, hourUtc, 2 * HOUR);
+      const newest = newestBackupDay(dir);
+      if (newest === null) continue;
+      assert.ok(newest >= expected, `at ${new Date(ms).toISOString()}: newest ${newest} < expected ${expected}`);
+    }
+  });
 });
