@@ -31,6 +31,30 @@ export const ADJUSTMENT_KINDS = { TIME: 'time', SESSION: 'session', MERGE: 'merg
 export const SYSTEM_ACTOR_ID = '0';
 
 /**
+ * Who to name as having made a correction.
+ *
+ * `actor_id` is not always somebody. It is `SYSTEM_ACTOR_ID` on a claw-back the checkpoint loop
+ * wrote unattended, and again on any row `purgeMember` anonymised — and rendering it as a mention
+ * either way produced `<@0>`, which Discord cannot resolve. An audit trail failing to name anyone
+ * on exactly the rows nobody can otherwise account for is the opposite of what it is for.
+ *
+ * **The two are told apart by `kind`, not by the sentinel**, because they are genuinely different
+ * facts and the sentinel cannot distinguish them. `CAP` is the only kind the bot writes to itself,
+ * and a purged row keeps whatever kind it was created with, so `kind` separates them for free —
+ * "the tracker did this on its own" and "a person did this and has since erased their data" are
+ * both answers an audit needs, and one label for both would quietly relabel somebody's correction
+ * as something the bot did to them.
+ *
+ * The erased case deliberately says no more than that. Erasing is about data held rather than about
+ * leaving, so that member may well still be in the guild — "a former member" would be a guess.
+ */
+export function describeAdjustmentActor({ kind, actor_id: actorId }) {
+  if (kind === ADJUSTMENT_KINDS.CAP) return 'the tracker';
+  if (actorId === SYSTEM_ACTOR_ID) return 'a member who erased their data';
+  return `<@${actorId}>`;
+}
+
+/**
  * Adds or removes time on one game for one member.
  *
  * Returns what was actually applied, which is not always what was asked for: a subtraction is

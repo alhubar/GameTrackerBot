@@ -3,7 +3,9 @@ import { db } from '../runtime.js';
 import { CARD_ACCENT_COLOR } from '../config.js';
 import { RANKS, formatPlayTime, rankForSeconds } from '../ranks.js';
 import { reconcileRank } from '../tracking.js';
-import { ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession, mergeGames } from '../adjustments.js';
+import {
+  ADJUSTMENT_KINDS, applyTimeAdjustment, voidSession, mergeGames, describeAdjustmentActor,
+} from '../adjustments.js';
 import { DUPLICATE_REASONS, findDuplicateGameNames } from '../gameNames.js';
 
 /**
@@ -55,6 +57,20 @@ const gameLabel = (name) => (name.length > GAME_NAME_MAX ? `${name.slice(0, GAME
 // duplicate sweep exists to surface. A backtick inside the name would end the span early, so those
 // few names fall back to bold and lose the whitespace hint rather than breaking the whole line.
 const nameSpan = (name) => (name.includes('`') ? `**${name}**` : `\`${name}\``);
+
+/**
+ * What a correction *did*, for the log line — everything but a merge, which is rendered separately.
+ *
+ * `cap` earns its own verb rather than falling in with `adjusted`, because it is the one kind no
+ * admin performed: "adjusted −2h" invites somebody to go looking for who did it. Its explanation
+ * sits on the following line, where it reads exactly like a typed justification, so the verb is the
+ * only place that difference can show.
+ */
+function verbFor(row) {
+  if (row.kind === ADJUSTMENT_KINDS.SESSION) return `voided session \`#${row.session_id}\``;
+  if (row.kind === ADJUSTMENT_KINDS.CAP) return 'clawed back';
+  return 'adjusted';
+}
 
 function rankLine(totalBefore, totalAfter) {
   const before = rankForSeconds(totalBefore);
@@ -411,9 +427,9 @@ async function handleLog(interaction) {
     // correction of zero. It names the two games instead, which is what it actually did.
     const what = row.kind === ADJUSTMENT_KINDS.MERGE
       ? `folded **${row.game_name}** into **${row.merged_into}**${target ? ` for${target}` : ''}`
-      : `${row.kind === ADJUSTMENT_KINDS.SESSION ? `voided session \`#${row.session_id}\`` : 'adjusted'}${target}`
+      : `${verbFor(row)}${target}`
         + ` **${signed(row.delta_seconds)}** on **${row.game_name}**`;
-    const parts = [`<t:${Math.floor(row.created_at / 1000)}:f> — <@${row.actor_id}> ${what}`];
+    const parts = [`<t:${Math.floor(row.created_at / 1000)}:f> — ${describeAdjustmentActor(row)} ${what}`];
     if (row.reason) parts.push(`  ↳ ${row.reason}`);
     return parts.join('\n');
   });

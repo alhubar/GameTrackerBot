@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ADJUSTMENT_KINDS, SYSTEM_ACTOR_ID, applyTimeAdjustment, voidSession, mergeGames, clawBackSessionCap,
+  describeAdjustmentActor,
 } from '../src/adjustments.js';
 import { tempDatabase, playSession, HOUR, MINUTE, T0 } from './helpers.js';
 
@@ -437,5 +438,52 @@ test('the guild picker lists every name on record, running sessions included', (
     db.startSession(G, 'user-3', 'Just Launched', T0);
     playSession(db, 'guild-2', U, 'Elsewhere', T0, 1 * HOUR);
     assert.deepEqual(db.getGuildGameNames(G), ['Hades', 'Celeste', 'Just Launched']);
+  });
+});
+
+/**
+ * Who the audit log names — issue #24. `actor_id` is the same `'0'` sentinel for a claw-back the
+ * checkpoint loop wrote unattended and for a row `purgeMember` anonymised, and both used to render
+ * as `<@0>`, which Discord cannot resolve. `kind` is what tells the two apart.
+ */
+test('a claw-back is attributed to the tracker rather than to nobody', () => {
+  assert.equal(
+    describeAdjustmentActor({ kind: ADJUSTMENT_KINDS.CAP, actor_id: SYSTEM_ACTOR_ID }),
+    'the tracker',
+  );
+});
+
+test('an anonymised actor is named as erased, not as the tracker', () => {
+  // Same sentinel, different fact: a person did this and later erased their data. Reading the
+  // sentinel alone cannot see the difference, which is why the kind decides.
+  for (const kind of [ADJUSTMENT_KINDS.TIME, ADJUSTMENT_KINDS.SESSION, ADJUSTMENT_KINDS.MERGE]) {
+    assert.equal(
+      describeAdjustmentActor({ kind, actor_id: SYSTEM_ACTOR_ID }),
+      'a member who erased their data',
+    );
+  }
+});
+
+test('an ordinary correction still names its admin', () => {
+  assert.equal(describeAdjustmentActor({ kind: ADJUSTMENT_KINDS.TIME, actor_id: ADMIN }), `<@${ADMIN}>`);
+});
+
+test('nothing an actor can be renders as an unresolvable mention', () => {
+  const actors = [SYSTEM_ACTOR_ID, ADMIN];
+  for (const kind of Object.values(ADJUSTMENT_KINDS)) {
+    for (const actor_id of actors) {
+      assert.notEqual(describeAdjustmentActor({ kind, actor_id }), `<@${SYSTEM_ACTOR_ID}>`);
+    }
+  }
+});
+
+test('the claw-back a real cap writes is attributed to the tracker end to end', () => {
+  withDb((db) => {
+    playSession(db, G, U, 'Elden Ring', T0, 14 * HOUR);
+    clawBackSessionCap(db, {
+      guildId: G, userId: U, gameName: 'Elden Ring', excessSeconds: 2 * HOUR, capSeconds: 12 * HOUR,
+    });
+    const [row] = db.getAdjustments(G, U);
+    assert.equal(describeAdjustmentActor(row), 'the tracker');
   });
 });
