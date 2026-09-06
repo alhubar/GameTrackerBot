@@ -57,7 +57,7 @@ export async function announceAchievements(member, achievementIds) {
   }
 }
 
-export async function announceServerAchievements(guild, unlockedTiers) {
+async function announceServerAchievements(guild, unlockedTiers) {
   if (!ACHIEVEMENT_ANNOUNCEMENTS || !unlockedTiers?.length || !ACHIEVEMENT_CHANNEL) return;
   const channel = findTextChannel(guild, ACHIEVEMENT_CHANNEL);
   if (!channel) return;
@@ -79,6 +79,12 @@ export async function checkServerAchievements(guild) {
  * Split from the settling below so anything that only wants to *look* at a period — a preview
  * script, or a future command — cannot hand a role out as a side effect of rendering. The badges
  * are awarded once, at the recap, and nowhere else.
+ *
+ * **Exported deliberately, and currently by nothing.** That split is the point of the export: it is
+ * the read-only half, and it stays reachable so the next thing that wants to look at a period
+ * reaches for it rather than for the half that awards roles. Every other internal-only export in
+ * this file has been removed — `buildBadgeCardFor` sat here claiming a preview-script caller that
+ * never existed, and was deleted rather than kept on the same promise (#23).
  */
 export async function computeSocialBadges(guild, range, championId) {
   await ensureMembersCached(guild);
@@ -109,21 +115,6 @@ export async function computeSocialBadges(guild, range, championId) {
     if (member) displayNames.set(userId, member.displayName);
   }
   return { awards, caveDwellerIds, displayNames };
-}
-
-/** The badge card for a period. Exported for the preview scripts. */
-export async function buildBadgeCardFor(guild, range, championId) {
-  const { awards, caveDwellerIds, displayNames } = await computeSocialBadges(guild, range, championId);
-  return buildSocialBadgesEmbed(awards, {
-    displayNames,
-    range,
-    bardRoleName: BARD_ROLE || null,
-    scribeRoleName: SCRIBE_ROLE || null,
-    bardFloorMinutes: BARD_MIN_MINUTES,
-    scribeFloorMinutes: SCRIBE_MIN_MINUTES,
-    caveDwellerRoleName: CAVE_DWELLER_ENABLED ? (CAVE_DWELLER_ROLE || null) : null,
-    caveDwellerIds,
-  });
 }
 
 /**

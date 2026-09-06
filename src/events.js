@@ -204,8 +204,8 @@ export function rollRecurringEvents(db, now, options = {}) {
   return rolled;
 }
 
-export const MIN_EVENT_REMINDER_GAP_MS = 15 * 60_000;
-export const STARTED_STAGE_STALE_MS = 10 * 60_000;
+const MIN_EVENT_REMINDER_GAP_MS = 15 * 60_000;
+const STARTED_STAGE_STALE_MS = 10 * 60_000;
 const EVENT_SCAN_LOOKBACK_MS = 24 * 60 * 60_000;
 
 /**

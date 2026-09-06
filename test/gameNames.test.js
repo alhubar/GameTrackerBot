@@ -185,3 +185,28 @@ test('a member holding a game twice over is one player, not two', () => {
     cleanup();
   }
 });
+
+/**
+ * The rows handed back are what `/adjust duplicates` renders, so they carry the three fields it
+ * asks for and nothing else. The sweep works on a richer internal entry — the normalised forms and,
+ * since #23, the precomputed number signature — and none of that is any of the caller's business.
+ */
+test('the rows handed back carry only the three fields the caller asked for', () => {
+  const [suggestion] = find(game('Fall Guys', 10), game('Fallguys', 2));
+  for (const entry of suggestion.names) {
+    assert.deepEqual(Object.keys(entry).sort(), ['name', 'playerCount', 'totalSeconds']);
+  }
+});
+
+/**
+ * The signature is computed once per name rather than twice per pair (#23). Behaviour is unchanged
+ * — this is the same sequel rule the tests above cover — but it is worth one case proving the
+ * hoisted value is still per-name and has not been smeared across the comparison.
+ */
+test('a precomputed signature still rejects a sequel and still allows a typo', () => {
+  assert.deepEqual(named(find(game('Diablo II', 10), game('Diablo III', 8))), []);
+  assert.deepEqual(
+    named(find(game('Diablo III', 10), game('DiabIo III', 1))),
+    [[DUPLICATE_REASONS.NEAR, 'Diablo III', 'DiabIo III']],
+  );
+});

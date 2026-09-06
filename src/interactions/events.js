@@ -47,7 +47,7 @@ const CANNOT_MANAGE = 'Only the person who created this event, or someone with M
  * looking at some other copy of the card, whose content is not the same string (usually not any
  * string at all).
  */
-export async function syncOriginalEventMessage(event, interaction, embed, components, { pruneMentionFor = null } = {}) {
+async function syncOriginalEventMessage(event, interaction, embed, components, { pruneMentionFor = null } = {}) {
   if (!event.message_id || event.message_id === interaction.message?.id) return;
   const guild = client.guilds.cache.get(event.guild_id);
   const channel = guild?.channels.cache.get(event.channel_id);

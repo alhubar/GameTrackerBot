@@ -37,7 +37,7 @@ export const trackerState = {
   presenceUpdates: 0,
 };
 
-export function playingGame(presence) {
+function playingGame(presence) {
   return presence?.activities.find((activity) => activity.type === ActivityType.Playing)?.name ?? null;
 }
 

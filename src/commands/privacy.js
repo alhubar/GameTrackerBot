@@ -15,10 +15,7 @@ import { formatPlayTime } from '../ranks.js';
  * separate, deliberately harder path.
  */
 
-export const PRIVACY_NOTE = 'Opting out stops new recording and hides you from every ranking. '
-  + 'Nothing is deleted, so you can opt back in at any time and pick up where you left off.';
-
-export function buildStatusEmbed(guildId, userId) {
+function buildStatusEmbed(guildId, userId) {
   const optedOutAt = db.getOptOutAt(guildId, userId);
   const stored = db.getStoredDataSummary(guildId, userId);
   const rows = [

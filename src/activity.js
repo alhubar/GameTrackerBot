@@ -40,7 +40,7 @@ export const DAYS_IN_WEEK = 7;
 
 /** How far back the histogram looks. Long enough that a quiet fortnight does not distort the
  *  shape, short enough that how the server played a year ago does not drown out how it plays now. */
-export const ACTIVITY_WINDOW_DAYS = 90;
+const ACTIVITY_WINDOW_DAYS = 90;
 export const ACTIVITY_WINDOW_MS = ACTIVITY_WINDOW_DAYS * 24 * HOUR_MS;
 
 /**

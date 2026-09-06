@@ -3,7 +3,7 @@ import { db } from '../runtime.js';
 import { buildTimezoneSelectRow } from '../interactions/eventViews.js';
 import { describeRepeat } from '../events.js';
 
-export async function handleEventCreate(interaction) {
+async function handleEventCreate(interaction) {
   await interaction.reply({
     content: 'Which timezone is this event in?',
     components: buildTimezoneSelectRow('event:tzcreate'),
@@ -11,7 +11,7 @@ export async function handleEventCreate(interaction) {
   });
 }
 
-export async function handleEventList(interaction) {
+async function handleEventList(interaction) {
   const upcoming = db.getUpcomingEventsForGuild(interaction.guild.id, Date.now(), 10);
   if (!upcoming.length) {
     await interaction.reply({ content: 'No upcoming events. Create one with `/event create`.', flags: MessageFlags.Ephemeral });

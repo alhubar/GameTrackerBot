@@ -146,8 +146,13 @@ const maxEdits = (shorter) => (shorter.length >= NEAR_TWO_EDITS_LENGTH ? 2 : 1);
  * genuinely close to two *different* games belongs in both suggestions.
  */
 export function findDuplicateGameNames(games) {
-  const entries = games.map((game) => ({ ...game, ...normalizeGameName(game.name) }))
-    .filter((entry) => entry.key.length > 0);
+  // The signature is computed here rather than in the pair loop below, where it would be recomputed
+  // on both sides of every comparison — O(n²) regex-match-split-sorts against a scan bounded at a
+  // thousand names, to answer a question that only ever depends on one name.
+  const entries = games.map((game) => {
+    const normalized = normalizeGameName(game.name);
+    return { ...game, ...normalized, numbers: numberSignature(normalized.words) };
+  }).filter((entry) => entry.key.length > 0);
 
   // Identical-after-normalisation is a bucketing job, not a comparison one, so it costs one pass.
   const buckets = new Map();
@@ -169,7 +174,7 @@ export function findDuplicateGameNames(games) {
     for (let j = i + 1; j < candidates.length; j += 1) {
       const [left, right] = [candidates[i][0], candidates[j][0]];
       // A sequel is not a typo, and this rule outranks both tests below.
-      if (numberSignature(left.words) !== numberSignature(right.words)) continue;
+      if (left.numbers !== right.numbers) continue;
       const reason = compare(left, right);
       if (reason) suggestions.push({ reason, names: [left, right].sort(byTimeDesc) });
     }
