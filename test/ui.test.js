@@ -21,6 +21,7 @@ process.env.RANK_HOURS = '1,2,3';
 const {
   findTextChannel, presentMemberIds, leaderboardLines, buildLeaderboardLines,
   buildMonthlyLeaderboardLines, buildServerProfileParts, buildHallOfFameLines, splitDiscordMessage,
+  stripLeadingTitleLine,
 } = await import('../src/ui.js');
 
 const GUILD = 'guild-1';
@@ -313,5 +314,60 @@ describe('splitDiscordMessage', () => {
     assert.ok(chunks.length > 1);
     for (const chunk of chunks) assert.ok(chunk.length <= 2000, `chunk of ${chunk.length}`);
     assert.equal(chunks.join('\n').replace(/\s+/g, ' '), content.replace(/\s+/g, ' '));
+  });
+});
+
+/**
+ * The title-line strip — issue #25. `/changes` adds its own header, so a release body that opens
+ * with one of its own would post two. The rule is narrow on purpose: bold end to end *and* naming
+ * the release's own version. Widening it eats the first real paragraph of a post members read, and
+ * that is the failure worth guarding, since nobody proof-reads the bot's own announcement.
+ */
+describe('stripLeadingTitleLine', () => {
+  test('a bold line naming the version is dropped', () => {
+    assert.equal(
+      stripLeadingTitleLine('**📣 Game Tracker v1.7.0**\n\nReal notes here.', 'v1.7.0'),
+      'Real notes here.',
+    );
+  });
+
+  test('the tag is matched with or without its leading v', () => {
+    assert.equal(stripLeadingTitleLine('**Game Tracker 1.7.0**\nNotes.', 'v1.7.0'), 'Notes.');
+    assert.equal(stripLeadingTitleLine('**Game Tracker 1.7.0**\nNotes.', '1.7.0'), 'Notes.');
+  });
+
+  // The case the narrow rule exists for: real notes routinely open on a bold feature heading.
+  test('a bold heading that is not a title survives', () => {
+    const body = '**Being AFK no longer counts as playing**\n\nThe tracker now pauses.';
+    assert.equal(stripLeadingTitleLine(body, 'v1.7.0'), body);
+  });
+
+  test('an unbolded first line naming the version survives', () => {
+    const body = 'Version 1.7.0 is out.\n\nDetails below.';
+    assert.equal(stripLeadingTitleLine(body, 'v1.7.0'), body);
+  });
+
+  /**
+   * GitHub stores release bodies with CRLF, so splitting on \n leaves a trailing \r on every line
+   * and a "blank" line is "\r", never "". Without trimming before the emptiness check, every
+   * separator blank under a stripped title survives and the post opens on a gap.
+   */
+  test('CRLF separators under a stripped title do not leave the post opening on a gap', () => {
+    const stripped = stripLeadingTitleLine('**Game Tracker v1.7.0**\r\n\r\n\r\nReal notes.\r', 'v1.7.0');
+    assert.equal(stripped.trimEnd(), 'Real notes.');
+    assert.ok(!/^\s/.test(stripped), `post opened on whitespace: ${JSON.stringify(stripped)}`);
+  });
+
+  test('a body that is nothing but its own title comes back empty', () => {
+    assert.equal(stripLeadingTitleLine('**Game Tracker v1.7.0**', 'v1.7.0'), '');
+  });
+
+  test('only the first line is ever considered', () => {
+    const body = 'Opening line.\n**Game Tracker v1.7.0**\nMore.';
+    assert.equal(stripLeadingTitleLine(body, 'v1.7.0'), body);
+  });
+
+  test('an empty body is left alone rather than throwing', () => {
+    assert.equal(stripLeadingTitleLine('', 'v1.7.0'), '');
   });
 });

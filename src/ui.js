@@ -137,6 +137,34 @@ export async function buildHallOfFameLines(db, guild, limit = HALL_OF_FAME_SIZE)
   });
 }
 
+/**
+ * Drops a release body's own leading title line if it has one, so it never duplicates the header
+ * `/changes` already adds.
+ *
+ * Only strips a line that is bold end-to-end **and** mentions the release's own version (e.g.
+ * `**📣 Game Tracker v1.0.0**`). An ordinary bold section header used as the first line of real
+ * release notes (`**Being AFK no longer counts as playing**`) never mentions the version, so it is
+ * left alone — and getting that wrong eats the first real paragraph of a post members read.
+ *
+ * Here rather than in `commands/changes.js`, which is its only caller, purely so it can be tested:
+ * that module imports `db` from `runtime.js`, and nothing under `test/` may. It is text shaping for
+ * a Discord post either way, which is what this file is, and `splitDiscordMessage` below is the
+ * other half of the same three lines in `/changes`.
+ */
+export function stripLeadingTitleLine(body, tagName) {
+  const lines = body.split('\n');
+  const first = lines[0]?.trim();
+  const version = tagName.replace(/^v/i, '');
+  if (first && /^\*\*.+\*\*$/.test(first) && version && first.includes(version)) {
+    lines.shift();
+    // Compare trimmed: GitHub stores release bodies with CRLF, so splitting on \n leaves a
+    // trailing \r on every line and a "blank" line is "\r", never "". Without the trim the
+    // separator blanks below a stripped title all survive and the post opens on a gap.
+    while (lines.length && lines[0].trim() === '') lines.shift();
+  }
+  return lines.join('\n');
+}
+
 export function splitDiscordMessage(content, maxLength = 2000) {
   const chunks = [];
   let remaining = content;
