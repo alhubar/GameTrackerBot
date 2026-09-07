@@ -71,3 +71,56 @@ describe('the recap card', () => {
     assert.match(embed.description, /2nd time/);
   });
 });
+
+describe('the runners-up field', () => {
+  const PODIUM_NAMES = new Map([['alice', 'Alice'], ['bob', 'Bob'], ['cleo', 'Cleo'], ['dan', 'Dan']]);
+  const withPodium = (podium, names = PODIUM_NAMES) =>
+    buildRecapEmbed({ ...recap(), podium }, { displayNames: names, avatarUrl: null }).data;
+  const closeBehind = (embed) => embed.fields.find((field) => field.name.includes('Close behind'));
+
+  const FULL_PODIUM = [
+    { userId: 'alice', totalSeconds: 5 * 3600 },
+    { userId: 'bob', totalSeconds: 4 * 3600 + 30 * 60 },
+    { userId: 'cleo', totalSeconds: 2 * 3600 },
+  ];
+
+  test('the other two are named with their time', () => {
+    const field = closeBehind(withPodium(FULL_PODIUM));
+    assert.equal(field.value, '**Bob** — 4h 30m\n**Cleo** — 2h');
+  });
+
+  test('it sits inline, so it completes the row rather than starting one', () => {
+    assert.equal(closeBehind(withPodium(FULL_PODIUM)).inline, true);
+  });
+
+  test('the winner is not listed under their own card', () => {
+    assert.doesNotMatch(closeBehind(withPodium(FULL_PODIUM)).value, /Alice/);
+  });
+
+  test('a runner-up the caller could not name is dropped, not shown as Unknown member', () => {
+    const field = closeBehind(withPodium(FULL_PODIUM, new Map([['alice', 'Alice'], ['cleo', 'Cleo']])));
+    assert.equal(field.value, '**Cleo** — 2h');
+    assert.doesNotMatch(field.value, /Unknown member/);
+  });
+
+  test('a period the winner played alone omits the field entirely', () => {
+    assert.equal(closeBehind(withPodium([FULL_PODIUM[0]])), undefined);
+  });
+
+  test('a podium of nobody but unnameable members omits it too', () => {
+    const embed = withPodium(FULL_PODIUM, new Map([['alice', 'Alice']]));
+    assert.equal(closeBehind(embed), undefined);
+  });
+
+  test('a recap built without a podium at all still renders', () => {
+    const embed = buildRecapEmbed(recap(), { displayNames: NAMES, avatarUrl: null }).data;
+    assert.equal(closeBehind(embed), undefined);
+    assert.equal(embed.title, 'Alice');
+  });
+
+  test('a deeper podium is capped, so the field cannot outgrow the two beside it', () => {
+    const field = closeBehind(withPodium([...FULL_PODIUM, { userId: 'dan', totalSeconds: 3600 }]));
+    assert.equal(field.value.split('\n').length, 2);
+    assert.doesNotMatch(field.value, /Dan/);
+  });
+});

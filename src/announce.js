@@ -309,6 +309,13 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
   });
 
   if (channel) {
+    // Warm the cache before the loop below, so those become cache reads rather than up to four
+    // separate API calls in one burst. It matters more than it used to: the card now names the
+    // runners-up, so a fetch that gets rate limited costs a line on the card rather than a lookup
+    // nothing read. Free when the social badges already ran — ensureMembersCached skips a complete
+    // cache — and the whole point on a guild with them switched off, where nothing else has.
+    await ensureMembersCached(guild).catch((error) =>
+      console.error('Could not cache members for the recap:', error));
     const displayNames = new Map();
     for (const entry of recap.podium) {
       const member = await guild.members.fetch(entry.userId).catch(() => null);

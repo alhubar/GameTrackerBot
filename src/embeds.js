@@ -11,6 +11,9 @@ const RECAP_EMPTY_GREY = 0x99AAB5;
 const SOCIAL_BADGE_BLUE = 0x5865F2;
 /** How many cave dwellers to name before falling back to "and N more". */
 const CAVE_DWELLERS_NAMED = 8;
+/** How many of the podium to name under the winner. Two, because the field sits beside two others
+ *  on one inline row and a taller one would leave them stranded against its whitespace. */
+const RECAP_RUNNERS_UP = 2;
 
 /** The card posted when a member unlocks a personal achievement. */
 export function buildAchievementEmbed(achievement, { displayName, avatarUrl, percentOfPlayers }) {
@@ -90,9 +93,27 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
     inline: true,
   });
 
-  // No runners-up: the card is about the member who won it, and a leaderboard underneath their
-  // name turns a celebration into a scoreboard — /leaderboard is right there for anyone who wants
-  // the standings. buildRecap still returns the podium — the no-winner card names the closest try.
+  // The rest of the podium, as a third inline field. Discord lays inline fields three to a row, so
+  // this one completes the row the two above start rather than opening a ragged second one — the
+  // same geometry that keeps it off the /stats card. Kept to names and times: the card is still
+  // about the member who won it, and /leaderboard is there for anyone who wants full standings.
+  //
+  // Anyone the caller could not name is dropped rather than rendered as the 'Unknown member'
+  // fallback, which is what a departed runner-up would otherwise read as. The podium deliberately
+  // does not over-fetch, so that shortens the field rather than backfilling — a name the server
+  // cannot see is worse than one line where there were two.
+  const runnersUp = (recap.podium ?? [])
+    .filter((entry) => entry.userId !== winner.userId && displayNames.has(entry.userId))
+    .slice(0, RECAP_RUNNERS_UP);
+  if (runnersUp.length) {
+    embed.addFields({
+      name: '🥈 Close behind',
+      value: runnersUp
+        .map((entry) => `**${nameOf(entry.userId)}** — ${formatPlayTime(entry.totalSeconds)}`)
+        .join('\n'),
+      inline: true,
+    });
+  }
 
   embed.setFooter({
     text: roleName
