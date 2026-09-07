@@ -939,9 +939,13 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
       const totalSeconds = (getStats.get(guildId, userId)?.total_seconds ?? 0) + activeSeconds;
       const nowDate = new Date(now);
       const monthStart = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1);
+      // Same clamp as getMonthlyLeaderboard, `MAX(0, ...)` included — these two are asserted to
+      // agree, so a guard on one is a guard on both. Unreachable from the only caller today, which
+      // passes Date.now() and so can hold no session that starts later; it is here because the
+      // caller after that one may not, and this is the shape that made the recap under-count.
       const monthSeconds = db.prepare(`
         SELECT COALESCE(SUM(CASE WHEN ended_at > ? THEN
-          CAST((MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
+          CAST(MAX(0, MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
           ELSE 0 END), 0) AS total_seconds
         FROM play_sessions WHERE guild_id = ? AND user_id = ?
       `).get(monthStart, now, monthStart, guildId, userId).total_seconds

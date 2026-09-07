@@ -249,6 +249,19 @@ describe('leaderboards', () => {
       `total ${row.total_seconds}s is under its own top game ${top.total_seconds}s`);
   });
 
+  // getPlayerProfile computes month time with the same clamp, and the two are asserted to agree
+  // above. Its only caller passes Date.now(), so it cannot reach this today — the test is what
+  // stops the next caller reaching it quietly.
+  test('the profile agrees with the board even when a session starts after the window', () => {
+    const monthStart = Date.UTC(2026, 7, 1);
+    const to = Date.parse('2026-08-20T00:00:00Z');
+    playSession(db, GUILD, USER, 'In window', monthStart + 5 * HOUR, 4 * HOUR);
+    playSession(db, GUILD, USER, 'After it', to + 6 * HOUR, HOUR);
+    const [row] = db.getMonthlyLeaderboard(GUILD, monthStart, to);
+    assert.equal(row.total_seconds, 4 * 3600);
+    assert.equal(db.getPlayerProfile(GUILD, USER, to).monthSeconds, row.total_seconds);
+  });
+
   test('a straddling session still counts only the part inside the window', () => {
     const from = Date.parse('2026-08-31T00:00:00Z');
     const to = Date.parse('2026-09-07T00:00:00Z');
