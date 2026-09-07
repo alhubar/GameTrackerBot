@@ -63,7 +63,9 @@ per-activity `platform` field (`ps5`, `xbox`, `desktop`) that discord.js drops b
 it. It is there to answer whether a console presence can be told apart from a desktop one — a
 console keeps broadcasting a game after play stops, sometimes for hours, and neither the idle pause
 nor `MAX_SESSION_HOURS` can catch that. Nothing acts on it yet; it only logs, and it is noisy, so
-turn it on to capture a few real console presences and turn it back off.
+turn it on to capture a few real console presences and turn it back off. Anyone already playing
+when the bot connects is logged too, marked `:startup`, so switching it on part-way through a
+session photographs what is running instead of waiting for the next presence change.
 
 Discord can only report games a member exposes through their Discord presence. The bot cannot see activity hidden by a member's privacy settings, nor activity while Discord itself is offline. After a bot restart it begins timing any current activity from the time it reconnects.
 

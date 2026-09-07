@@ -78,3 +78,63 @@ describe('describeRawPresence — what it captures', () => {
     assert.match(line, /member:[0-9a-f]{8}/);
   });
 });
+
+/** A raw GUILD_CREATE packet, which is how Discord announces presences already running at connect. */
+function guildCreate(presences) {
+  return { t: 'GUILD_CREATE', d: { id: '999', presences } };
+}
+
+/** One entry of that packet's `presences` array — the same shape a PRESENCE_UPDATE carries in `d`. */
+function snapshot(activities, extra = {}) {
+  return { user: { id: '123456789012345678' }, status: 'online', activities, ...extra };
+}
+
+// A console left broadcasting in rest mode produces no presence *updates* — that is the whole
+// complaint in issue #5 — so starting the spike mid-phantom would capture nothing at all without
+// this. The connect snapshot is the only view of a session already in flight.
+describe('describeRawPresence — the connect snapshot', () => {
+  test('captures a member already playing when the bot connects', () => {
+    const line = describeRawPresence(guildCreate([
+      snapshot([{ type: PLAYING, name: 'Helldivers 2', platform: 'ps5', application_id: '9876' }]),
+    ]));
+    assert.match(line, /platform=ps5/);
+    assert.match(line, /Helldivers 2/);
+  });
+
+  test('tags a snapshot apart from an update, which is a transition and this is not', () => {
+    const startup = describeRawPresence(guildCreate([snapshot([{ type: PLAYING, name: 'Factorio' }])]));
+    const update = describeRawPresence(packet([{ type: PLAYING, name: 'Factorio' }]));
+    assert.match(startup, /\[PRESENCE-SPIKE:startup\]/);
+    assert.doesNotMatch(update, /:startup/);
+  });
+
+  test('describes every playing member, one line each', () => {
+    const line = describeRawPresence(guildCreate([
+      snapshot([{ type: PLAYING, name: 'Deep Rock Galactic' }], { user: { id: '1' } }),
+      snapshot([{ type: LISTENING, name: 'Spotify' }], { user: { id: '2' } }),
+      snapshot([{ type: PLAYING, name: 'Rocket League', platform: 'xbox' }], { user: { id: '3' } }),
+    ]));
+    assert.equal(line.split('\n').length, 2);
+    assert.match(line, /Deep Rock Galactic/);
+    assert.match(line, /Rocket League/);
+    assert.doesNotMatch(line, /Spotify/);
+  });
+
+  const quiet = [
+    ['a guild where nobody is playing', guildCreate([snapshot([])])],
+    ['a guild with an empty presence list', guildCreate([])],
+    ['a guild that sent no presence list at all', { t: 'GUILD_CREATE', d: { id: '999' } }],
+  ];
+
+  for (const [label, input] of quiet) {
+    test(`says nothing about ${label}`, () => {
+      assert.equal(describeRawPresence(input), null);
+    });
+  }
+
+  test('does not print the raw user id', () => {
+    const line = describeRawPresence(guildCreate([snapshot([{ type: PLAYING, name: 'Factorio' }])]));
+    assert.doesNotMatch(line, /123456789012345678/);
+    assert.match(line, /member:[0-9a-f]{8}/);
+  });
+});
