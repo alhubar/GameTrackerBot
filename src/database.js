@@ -775,10 +775,21 @@ export function openDatabase(filename = 'data/tracker.sqlite') {
   // Completed sessions clamped to the window, plus whatever the live sessions have earned inside
   // it. Without the second half a member six hours into a session sees those hours on their /stats
   // card and none of them on the board. Idle time is excluded here exactly as it is everywhere else.
+  //
+  // **Both edges of the window are guarded, and the upper one is the easy half to forget.** The
+  // CASE drops sessions that finished before the window. The `MAX(0, ...)` drops the ones that
+  // began after it ended: for those, `MIN(ended_at, :to)` clamps down to `:to` while
+  // `MAX(started_at, :from)` stays at `started_at`, so the row evaluates to `:to - started_at` — a
+  // negative that was being *subtracted* from the member's total. `/leaderboard` passes `now` as
+  // `:to` and can never reach it, which is why this only ever surfaced on the recap, the one caller
+  // whose upper bound is in the past: a member who played the Monday after the period closed had
+  // that Monday deducted from the week they were being judged on, and the size of the deduction
+  // grew with how late in the day they started. The live-session branch below has always been
+  // wrapped this way; this is the same guard, not a new idea.
   const getMonthlyLeaderboardStmt = db.prepare(`
     SELECT user_id, SUM(seconds) AS total_seconds FROM (
       SELECT user_id, CASE WHEN ended_at > ? THEN
-        CAST((MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
+        CAST(MAX(0, MIN(ended_at, ?) - MAX(started_at, ?)) / 1000 AS INTEGER)
         ELSE 0 END AS seconds
       FROM play_sessions WHERE guild_id = ? AND ${NOT_OPTED_OUT('play_sessions')}
 

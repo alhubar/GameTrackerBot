@@ -214,6 +214,48 @@ describe('leaderboards', () => {
     playSession(db, GUILD, USER, 'Jan', Date.parse('2026-01-10T00:00:00Z'), 5 * HOUR);
     assert.equal(db.getMonthlyLeaderboard(GUILD, Date.UTC(2026, 1, 1), Date.parse('2026-02-06T00:00:00Z')).length, 0);
   });
+
+  // The recap is the only caller whose upper bound is in the past, so it was the only one that
+  // could reach a session starting after the window. Those used to score `to - started_at` and be
+  // subtracted from the total, which is how a card reported less time than its own most-played game.
+  test('a session that starts after the window contributes nothing, not a negative', () => {
+    const from = Date.parse('2026-08-31T00:00:00Z');
+    const to = Date.parse('2026-09-07T00:00:00Z');
+    playSession(db, GUILD, USER, 'In window', from + 10 * HOUR, 6 * HOUR);
+    playSession(db, GUILD, USER, 'The Monday after', to + 9 * HOUR, 30 * MINUTE);
+    const [row] = db.getMonthlyLeaderboard(GUILD, from, to);
+    assert.equal(row.total_seconds, 6 * 3600);
+  });
+
+  test('the later that session started, the more it used to take — now it takes nothing', () => {
+    const from = Date.parse('2026-08-31T00:00:00Z');
+    const to = Date.parse('2026-09-07T00:00:00Z');
+    playSession(db, GUILD, USER, 'In window', from + 10 * HOUR, 6 * HOUR);
+    playSession(db, GUILD, USER, 'Late Monday', to + 20 * HOUR, 15 * MINUTE);
+    const [row] = db.getMonthlyLeaderboard(GUILD, from, to);
+    assert.equal(row.total_seconds, 6 * 3600);
+  });
+
+  test('a total can never come in under the most-played game inside the same window', () => {
+    const from = Date.parse('2026-08-31T00:00:00Z');
+    const to = Date.parse('2026-09-07T00:00:00Z');
+    playSession(db, GUILD, USER, 'World of Warcraft', from + 10 * HOUR, 18 * HOUR + 12 * MINUTE);
+    playSession(db, GUILD, USER, 'Deep Rock Galactic', from + 3 * 24 * HOUR, 2 * HOUR);
+    playSession(db, GUILD, USER, 'World of Warcraft', to + 9 * HOUR + 41 * MINUTE, 30 * MINUTE);
+    const [row] = db.getMonthlyLeaderboard(GUILD, from, to);
+    const top = db.getMonthlyTopGame(GUILD, USER, from, to);
+    assert.equal(row.total_seconds, 20 * 3600 + 12 * 60);
+    assert.ok(row.total_seconds >= top.total_seconds,
+      `total ${row.total_seconds}s is under its own top game ${top.total_seconds}s`);
+  });
+
+  test('a straddling session still counts only the part inside the window', () => {
+    const from = Date.parse('2026-08-31T00:00:00Z');
+    const to = Date.parse('2026-09-07T00:00:00Z');
+    playSession(db, GUILD, USER, 'Across the end', to - 2 * HOUR, 5 * HOUR);
+    const [row] = db.getMonthlyLeaderboard(GUILD, from, to);
+    assert.equal(row.total_seconds, 2 * 3600);
+  });
 });
 
 describe('server profile', () => {
