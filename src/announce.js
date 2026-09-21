@@ -153,7 +153,9 @@ async function settleSocialBadges(guild, recap, championId) {
   await handOver(BARD_ROLE, BARD_ROLE_ICON, BARD_ROLE_COLOR, awards.bard);
   await handOver(SCRIBE_ROLE, SCRIBE_ROLE_ICON, SCRIBE_ROLE_COLOR, awards.scribe);
 
-  await applyCaveDwellerRole(guild, range, caveDwellerIds);
+  // The role stays on everyone silent this period; the card only names whoever is new to it —
+  // otherwise a member silent for a third period running gets re-announced every single week.
+  const newCaveDwellerIds = await applyCaveDwellerRole(guild, range, caveDwellerIds);
 
   // The awards travel back out alongside the card because `announceRecap` writes every badge
   // holder down in one place. Recording them here would split that record across two functions and
@@ -167,7 +169,7 @@ async function settleSocialBadges(guild, recap, championId) {
     bardFloorMinutes: BARD_MIN_MINUTES,
     scribeFloorMinutes: SCRIBE_MIN_MINUTES,
     caveDwellerRoleName: CAVE_DWELLER_ENABLED ? (CAVE_DWELLER_ROLE || null) : null,
-    caveDwellerIds,
+    caveDwellerIds: newCaveDwellerIds,
   });
   return { embed, awards };
 }
@@ -203,8 +205,10 @@ async function recordRecapWinners(guild, recap, awards, now) {
 }
 
 /**
- * Gives the Cave Dweller role to everyone who did nothing at all last period, and takes it off
- * everyone else. Returns their ids so the card can name them, or null when the badge is off.
+ * Finds everyone who did nothing at all last period — the role's full membership for this period,
+ * or null when the badge is off. This is the set `applyCaveDwellerRole` reconciles the role
+ * against, not the set the card names; a member silent for a second period in a row belongs in
+ * this list so the role stays on them, even though the card only announces new arrivals.
  *
  * Not an award and not ranked, so it cannot use the award pass: it lands on however many members
  * were absent, or on none. It also cannot collide with the other badges, and needs no rule saying
@@ -237,9 +241,19 @@ function findCaveDwellers(guild, range) {
   return dwellers;
 }
 
-/** Hands the inactivity badge to exactly this set of members. The write half of the pair above. */
+/**
+ * Hands the inactivity badge to exactly this set of members, and returns the ones who did not
+ * already hold it. The write half of the pair above.
+ *
+ * The card names arrivals, not the whole roster: a member silent for a third period running has
+ * nothing new to report, and re-naming them every week is noise, not news. Read before the sync
+ * call reconciles membership, since afterwards every dweller in `dwellers` holds the role and the
+ * distinction is gone.
+ */
 async function applyCaveDwellerRole(guild, range, dwellers) {
-  if (!dwellers) return;
+  if (!dwellers) return [];
+  const role = guild.roles.cache.find((candidate) => candidate.name === CAVE_DWELLER_ROLE);
+  const alreadyHeld = role ? new Set(role.members.keys()) : new Set();
   await syncBadgeRoleMembers(guild, dwellers, {
     roleName: CAVE_DWELLER_ROLE,
     roleIcon: CAVE_DWELLER_ROLE_ICON,
@@ -258,6 +272,7 @@ async function applyCaveDwellerRole(guild, range, dwellers) {
     reason: `${CAVE_DWELLER_ROLE} — inactivity badge`,
     awardReason: `${CAVE_DWELLER_ROLE} — nothing recorded last ${range.periodNoun}`,
   }).catch((error) => console.error('Could not settle the Cave Dweller role:', error));
+  return dwellers.filter((id) => !alreadyHeld.has(id));
 }
 
 /**
