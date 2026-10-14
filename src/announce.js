@@ -11,10 +11,10 @@ import { achievementById, evaluateRecapBadge } from './achievements.js';
 import { evaluateServerAchievements } from './serverAchievements.js';
 import {
   buildAchievementEmbed, buildServerAchievementEmbed, buildRecapEmbed, buildNoWinnerRecapEmbed,
-  buildSocialBadgesEmbed,
+  buildSocialBadgesEmbed, buildRestPeriodEmbed,
 } from './embeds.js';
 import {
-  buildRecap, isRecapDue, markRecapAnnounced, previousPeriodRange, restingMemberIds,
+  buildRecap, isRecapDue, markRecapAnnounced, isRestPeriod, previousPeriodRange,
 } from './recap.js';
 import { awardSocialBadges } from './socialBadges.js';
 import {
@@ -88,7 +88,7 @@ export async function checkServerAchievements(guild) {
  * this file has been removed — `buildBadgeCardFor` sat here claiming a preview-script caller that
  * never existed, and was deleted rather than kept on the same promise (#23).
  */
-export async function computeSocialBadges(guild, range, championId, restingIds = []) {
+export async function computeSocialBadges(guild, range, championId) {
   await ensureMembersCached(guild);
   // Departed members are dropped before the award pass, never after: a post-filter would hand a
   // badge to somebody who has left and then quietly show it as unclaimed.
@@ -104,7 +104,6 @@ export async function computeSocialBadges(guild, range, championId, restingIds =
     text: board('text'),
     voiceFloorMinutes: BARD_MIN_MINUTES,
     textFloorMinutes: SCRIBE_MIN_MINUTES,
-    restingIds,
   });
   const caveDwellerIds = findCaveDwellers(guild, range);
 
@@ -130,10 +129,10 @@ export async function computeSocialBadges(guild, range, championId, restingIds =
  * The champion is passed in by id only. Nothing here needs their role to exist yet, so this can be
  * settled before the playtime badge is handed over without the two interleaving.
  */
-async function settleSocialBadges(guild, recap, championId, restingIds) {
+async function settleSocialBadges(guild, recap, championId) {
   if (!SOCIAL_ENABLED || (!BARD_ROLE && !SCRIBE_ROLE)) return null;
   const { range } = recap;
-  const { awards, caveDwellerIds, displayNames } = await computeSocialBadges(guild, range, championId, restingIds);
+  const { awards, caveDwellerIds, displayNames } = await computeSocialBadges(guild, range, championId);
 
   // An unclaimed badge is stripped rather than left on last period's holder — that is what makes
   // "unclaimed" an outcome the recap can honestly report.
@@ -278,14 +277,44 @@ async function applyCaveDwellerRole(guild, range, dwellers) {
   return dwellers.filter((id) => !alreadyHeld.has(id));
 }
 
-/** Display names for whichever of `userIds` are still in the guild; anyone else is simply absent. */
-async function namesFor(guild, userIds) {
-  const names = new Map();
-  for (const userId of userIds) {
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (member) names.set(userId, member.displayName);
+/**
+ * A rest period: every earned badge comes off, nothing is recorded, and a short card says why.
+ *
+ * Cave Dweller is the exception and runs exactly as on any other period. It is not a prize, so it
+ * is not what a rest is for; and since it strips its holder's rank, which only comes back when they
+ * next turn up, clearing it here would leave its holders with no rank at all — the opposite of the
+ * point.
+ */
+async function announceRestPeriod(guild, range, now) {
+  for (const roleName of [RECAP_WINNER_ROLE, BARD_ROLE, SCRIBE_ROLE]) {
+    await clearBadgeRole(guild, roleName)
+      .catch((error) => console.error(`Could not clear the ${roleName} role for the rest period:`, error));
   }
-  return names;
+
+  // findCaveDwellers reads the member cache, which the badge pass would otherwise have warmed.
+  await ensureMembersCached(guild).catch((error) =>
+    console.error('Could not cache members for the rest period:', error));
+  const newCaveDwellerIds = await applyCaveDwellerRole(guild, range, findCaveDwellers(guild, range));
+  const displayNames = new Map();
+  for (const userId of newCaveDwellerIds) {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (member) displayNames.set(userId, member.displayName);
+  }
+
+  const channel = findTextChannel(guild, RECAP_CHANNEL || ACHIEVEMENT_CHANNEL);
+  if (channel) {
+    const embed = buildRestPeriodEmbed(range, {
+      botAvatarUrl: client.user?.displayAvatarURL() ?? null,
+      restPeriods: BADGE_REST_PERIODS,
+      displayNames,
+      caveDwellerRoleName: CAVE_DWELLER_ENABLED ? (CAVE_DWELLER_ROLE || null) : null,
+      caveDwellerIds: newCaveDwellerIds,
+    });
+    await channel.send({ embeds: [embed] })
+      .catch((error) => console.error('Could not post the rest-period recap:', error));
+  }
+  markRecapAnnounced(db, guild.id, now, RECAP_PERIOD);
+  return { range, rest: true, winner: null };
 }
 
 /**
@@ -294,19 +323,16 @@ async function namesFor(guild, userIds) {
  */
 export async function announceRecap(guild, now = Date.now(), { force = false } = {}) {
   if (!force && !isRecapDue(db, guild.id, now, RECAP_PERIOD, RECAP_HOUR_UTC)) return null;
-  // Worked out once and shared by both passes, so a member benched from the title cannot slip into
-  // Bard instead — the bench is from every badge, or their rank still never shows.
-  const restingIds = BADGE_REST_PERIODS
-    ? restingMemberIds(db, guild.id, previousPeriodRange(now, RECAP_PERIOD), BADGE_REST_PERIODS)
-    : new Set();
-  const recap = buildRecap(db, guild.id, now, {
-    period: RECAP_PERIOD, minSeconds: RECAP_MIN_SECONDS, restingIds,
-  });
+  const range = previousPeriodRange(now, RECAP_PERIOD);
+  if (BADGE_REST_PERIODS && isRestPeriod(db, guild.id, range, BADGE_REST_PERIODS)) {
+    return announceRestPeriod(guild, range, now);
+  }
+  const recap = buildRecap(db, guild.id, now, { period: RECAP_PERIOD, minSeconds: RECAP_MIN_SECONDS });
   const channel = findTextChannel(guild, RECAP_CHANNEL || ACHIEVEMENT_CHANNEL);
 
   // One post for the whole period. The badges are settled first so that whichever branch below
   // runs, its message carries the same companion card.
-  const social = await settleSocialBadges(guild, recap, recap.winner?.userId ?? null, [...restingIds])
+  const social = await settleSocialBadges(guild, recap, recap.winner?.userId ?? null)
     .catch((error) => {
       console.error('Could not settle the social badges:', error);
       return null;
@@ -322,7 +348,6 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
       const embed = buildNoWinnerRecapEmbed(recap, {
         botAvatarUrl: client.user?.displayAvatarURL() ?? null,
         roleName: RECAP_WINNER_ROLE || null,
-        displayNames: await namesFor(guild, recap.rested.map((entry) => entry.userId)),
       });
       await channel.send({ embeds: [embed, socialEmbed].filter(Boolean) })
         .catch((error) => console.error('Could not post the recap:', error));
@@ -352,7 +377,11 @@ export async function announceRecap(guild, now = Date.now(), { force = false } =
     // cache — and the whole point on a guild with them switched off, where nothing else has.
     await ensureMembersCached(guild).catch((error) =>
       console.error('Could not cache members for the recap:', error));
-    const displayNames = await namesFor(guild, [...recap.podium, ...recap.rested].map((entry) => entry.userId));
+    const displayNames = new Map();
+    for (const entry of recap.podium) {
+      const member = await guild.members.fetch(entry.userId).catch(() => null);
+      if (member) displayNames.set(entry.userId, member.displayName);
+    }
     const winnerMember = await guild.members.fetch(recap.winner.userId).catch(() => null);
     const embed = buildRecapEmbed(recap, {
       displayNames,

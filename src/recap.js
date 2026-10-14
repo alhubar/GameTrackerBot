@@ -114,55 +114,40 @@ export function nextPeriodStart(now, period = 'week') {
 }
 
 /**
- * Everyone who wore any badge in the `periods` periods before `range` — the members sitting this
- * one out. Read from `recap_winners`, so Cave Dweller never benches anybody (it is not recorded).
+ * True when `range` is a rest period: any badge was awarded in the `periods` periods before it.
  *
- * The bench exists because every badge outranks every rank role: on a server where the same few
- * members take every badge every week, their rank colour and section would otherwise never show
- * again. A rest period is the one week it does. It covers *every* badge rather than just the one
- * held — otherwise last week's Champion drops to Bard, and nothing has changed.
- *
- * Counted back from the period being judged, never from the latest record, so a forced re-run of a
- * period benches exactly the same people the first pass did.
+ * Every badge outranks every rank role, so on a server where the same few members win every week
+ * their rank never shows. A rest period awards nothing at all, which is the one time it does. It
+ * follows from the record rather than from a calendar, so a period nobody qualified in does not
+ * spend a rest on nothing, and a forced re-run of a period reaches the same answer as the first
+ * pass — it only ever looks at periods *before* the one being judged. Cave Dweller is not recorded
+ * and so never causes a rest.
  */
-export function restingMemberIds(db, guildId, range, periods = 1) {
-  const resting = new Set();
+export function isRestPeriod(db, guildId, range, periods = 1) {
   let cursor = range;
   for (let step = 0; step < periods; step += 1) {
     cursor = previousPeriodRange(cursor.start, cursor.period);
-    for (const row of db.getRecapWinnersForPeriod(guildId, cursor.key)) resting.add(row.user_id);
+    if (db.getRecapWinnersForPeriod(guildId, cursor.key).length) return true;
   }
-  return resting;
+  return false;
 }
 
 /**
  * Builds the last completed period's recap.
  *
- * Always returns { range, podium, winner, minSeconds, rested }. `winner` is null when nobody
- * cleared `minSeconds` — a token few minutes should not crown anyone, and on a quiet week the title
- * is better left vacant than handed to whoever happened to open a launcher. Callers announce that
+ * Always returns { range, podium, winner, minSeconds }. `winner` is null when nobody cleared
+ * `minSeconds` — a token few minutes should not crown anyone, and on a quiet week the title is
+ * better left vacant than handed to whoever happened to open a launcher. Callers announce that
  * case rather than staying silent, so the badge visibly changes hands (or visibly does not).
- *
- * `restingIds` are left off the podium entirely. `rested` is the ones among them who would
- * otherwise have taken the title — they outplayed whoever did and cleared the bar — so the card can
- * say so rather than quietly writing the real leader out of the week.
  */
-export function buildRecap(db, guildId, now, {
-  period = 'week', podiumSize = 3, minSeconds = 0, restingIds = new Set(),
-} = {}) {
+export function buildRecap(db, guildId, now, { period = 'week', podiumSize = 3, minSeconds = 0 } = {}) {
   const range = previousPeriodRange(now, period);
-  // Over-fetched by exactly the bench, the most the filter below can remove, so a full podium
-  // survives it. The podium otherwise deliberately takes its top rows with no over-fetch.
-  const leaderboard = db.getMonthlyLeaderboard(guildId, range.start, range.end, podiumSize + restingIds.size)
-    .map((row) => ({ userId: row.user_id, totalSeconds: row.total_seconds }));
-  const podium = leaderboard.filter((entry) => !restingIds.has(entry.userId)).slice(0, podiumSize);
+  const leaderboard = db.getMonthlyLeaderboard(guildId, range.start, range.end, podiumSize);
+  const podium = leaderboard.map((row) => ({ userId: row.user_id, totalSeconds: row.total_seconds }));
   const top = podium[0];
-  const rested = leaderboard.filter((entry) => restingIds.has(entry.userId)
-    && entry.totalSeconds >= minSeconds
-    && (!top || entry.totalSeconds >= top.totalSeconds));
 
   if (!top || top.totalSeconds < minSeconds) {
-    return { range, podium, winner: null, minSeconds, rested };
+    return { range, podium, winner: null, minSeconds };
   }
 
   const topGame = db.getMonthlyTopGame(guildId, top.userId, range.start, range.end);
@@ -170,7 +155,6 @@ export function buildRecap(db, guildId, now, {
     range,
     podium,
     minSeconds,
-    rested,
     winner: {
       ...top,
       topGame: topGame?.game_name ?? null,

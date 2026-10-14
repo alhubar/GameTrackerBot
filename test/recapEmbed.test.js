@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 // guaranteed to happen before the graph loads. dotenv leaves an existing value alone, so a real
 // local .env still wins.
 process.env.DISCORD_TOKEN ??= 'test-token';
-const { buildRecapEmbed, buildNoWinnerRecapEmbed, ordinal } = await import('../src/embeds.js');
+const { buildRecapEmbed, buildRestPeriodEmbed, ordinal } = await import('../src/embeds.js');
 
 const RANGE = { title: 'Gamer of the Week', periodNoun: 'week' };
 const NAMES = new Map([['alice', 'Alice']]);
@@ -125,39 +125,37 @@ describe('the runners-up field', () => {
   });
 });
 
-describe('a leader sitting out', () => {
-  const NAMED = new Map([['alice', 'Alice'], ['bob', 'Bob']]);
-  const RESTED = [{ userId: 'bob', totalSeconds: 9 * 3600 }];
+describe('the rest card', () => {
+  const card = (options = {}) => buildRestPeriodEmbed(RANGE, options).data;
 
-  test('the winner card names them with their time', () => {
-    const embed = buildRecapEmbed({ ...recap(), rested: RESTED }, { displayNames: NAMED, avatarUrl: null }).data;
-    assert.match(embed.description, /\*\*Bob\*\* \(9h\) played more but sat this one out after wearing a badge last week/);
-    assert.equal(embed.title, 'Alice', 'the card is still about the winner');
+  test('it says why there are no badges, so it does not read as the bot breaking', () => {
+    const data = card();
+    assert.equal(data.title, '🛌 Rest week');
+    assert.match(data.description, /everybody wears their own rank for a week/);
   });
 
-  test('it sits after the win count, not instead of it', () => {
-    const embed = buildRecapEmbed({ ...recap(), rested: RESTED },
-      { displayNames: NAMED, avatarUrl: null, winNumber: 2 }).data;
-    assert.match(embed.description, /2nd time[\s\S]*sat this one out/);
+  test('with one rest period it says the week now running counts', () => {
+    assert.match(card({ restPeriods: 1 }).description, /This week counts again for everyone/);
   });
 
-  test('somebody the caller could not name is dropped', () => {
-    const embed = buildRecapEmbed({ ...recap(), rested: RESTED }, { displayNames: NAMES, avatarUrl: null }).data;
-    assert.doesNotMatch(embed.description, /sat this one out|Unknown member/);
+  test('with longer rests it does not promise which week counts', () => {
+    const { description } = card({ restPeriods: 2 });
+    assert.doesNotMatch(description, /This week counts/);
+    assert.match(description, /once the rest is over/);
   });
 
-  test('a period with nobody but benched members over the bar does not say nobody was worthy', () => {
-    const embed = buildNoWinnerRecapEmbed(
-      { range: RANGE, minSeconds: 2 * 3600, podium: [], rested: RESTED },
-      { displayNames: NAMED },
-    ).data;
-    assert.equal(embed.title, 'The title rests this week');
-    assert.match(embed.description, /Bob\*\* \(9h\)/);
-    assert.match(embed.description, /Nobody else managed \*\*2h\*\*/);
+  test('new Cave Dwellers are still named, since that badge keeps running', () => {
+    const data = card({
+      displayNames: new Map([['bob', 'Bob']]),
+      caveDwellerRoleName: 'Cave Dweller',
+      caveDwellerIds: ['bob'],
+    });
+    assert.equal(data.fields.length, 1);
+    assert.match(data.fields[0].value, /\*\*Bob\*\*/);
   });
 
-  test('an ordinary empty period is still nobody was worthy', () => {
-    const embed = buildNoWinnerRecapEmbed({ range: RANGE, minSeconds: 2 * 3600, podium: [] }, {}).data;
-    assert.equal(embed.title, 'Nobody was worthy');
+  test('no Cave Dweller field when the badge is off or nobody new arrived', () => {
+    assert.equal(card({ caveDwellerRoleName: null, caveDwellerIds: ['bob'] }).fields, undefined);
+    assert.equal(card({ caveDwellerRoleName: 'Cave Dweller', caveDwellerIds: [] }).fields, undefined);
   });
 });

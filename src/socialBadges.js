@@ -47,8 +47,6 @@ const ranked = (rows, metric) => [...rows].sort((a, b) => {
  * and splitting them between SQL and here is how a badge ends up handed to somebody who should
  * have been skipped.
  *
- * `restingIds` are members benched for having worn a badge last period (see `restingMemberIds`).
- *
  * Returns `{ bard, scribe, alsoTopped }`. A null award means the badge goes unclaimed, which is a
  * real outcome the recap renders rather than an error. `alsoTopped` maps a member id to the boards
  * they led but were not given, so the recap can say "also topped voice this week" under their name
@@ -61,17 +59,14 @@ export function awardSocialBadges({
   text = [],
   voiceFloorMinutes = 0,
   textFloorMinutes = 0,
-  restingIds = [],
 } = {}) {
   const boards = [
     { ...BOARD_ORDER[0], rows: voice, floor: voiceFloorMinutes },
     { ...BOARD_ORDER[1], rows: text, floor: textFloorMinutes },
   ];
 
-  // Champion has first claim, so it is already spoken for before anything else is decided. Anyone
-  // sitting out after wearing a badge last period is treated exactly as if they held one now: passed
-  // over, and still credited with "led this" when they topped the board.
-  const taken = new Set([...(championId ? [championId] : []), ...restingIds]);
+  // Champion has first claim, so it is already spoken for before anything else is decided.
+  const taken = new Set(championId ? [championId] : []);
   const alsoTopped = new Map();
   const noteTopped = (userId, label) => {
     if (!alsoTopped.has(userId)) alsoTopped.set(userId, []);

@@ -43,21 +43,6 @@ export function buildServerAchievementEmbed(tier, guildIconUrl = null) {
     .setDescription(tier.celebration);
 }
 
-/**
- * The line naming whoever out-played the winner but was sitting out after last period's badge, or
- * null when nobody was. Anyone `displayNames` cannot name is dropped, the same rule as the podium.
- * Times are given because without them "sat this one out" reads as an excuse rather than a result.
- */
-export function restedLine(rested, displayNames, periodNoun) {
-  const named = (rested ?? []).filter((entry) => displayNames.has(entry.userId));
-  if (!named.length) return null;
-  const who = named
-    .map((entry) => `**${displayNames.get(entry.userId)}** (${formatPlayTime(entry.totalSeconds)})`)
-    .join(', ');
-  return `🛌 ${who} played more but sat this one out `
-    + `after wearing a badge last ${periodNoun}.`;
-}
-
 /** 1st, 2nd, 3rd, 4th… with the 11th–13th exceptions English needs and the naive rule gets wrong. */
 export function ordinal(n) {
   const teens = n % 100;
@@ -83,12 +68,11 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
     // No date range: the message's own timestamp already says which week this was.
     .setAuthor({ name: `🏆 ${range.title}` })
     .setTitle(nameOf(winner.userId))
-    .setDescription([
-      `**${formatPlayTime(winner.totalSeconds)}** played across **${winner.gamesPlayed}** `
-        + `${winner.gamesPlayed === 1 ? 'game' : 'different games'} last ${range.periodNoun}.`,
-      winNumber > 1 ? `👑 Their **${ordinal(winNumber)} time** taking the title.` : null,
-      restedLine(recap.rested, displayNames, range.periodNoun),
-    ].filter(Boolean).join('\n\n'));
+    .setDescription(`**${formatPlayTime(winner.totalSeconds)}** played across **${winner.gamesPlayed}** `
+      + `${winner.gamesPlayed === 1 ? 'game' : 'different games'} last ${range.periodNoun}.`
+      + (winNumber > 1 ? `
+
+👑 Their **${ordinal(winNumber)} time** taking the title.` : ''));
 
   if (winner.topGame) {
     embed.addFields({
@@ -195,7 +179,7 @@ export function buildSocialBadgesEmbed(awards, {
       .filter(([userId, boards]) => boards.includes(badge.label) && userId !== badge.award?.user_id)
       .map(([userId]) => `_${nameOf(userId)} led this_`);
     // The floor line only when it is true. A badge left unclaimed because its leader already holds
-    // one, or is sitting out, was reached by somebody — "nobody reached 1h" above their name is false.
+    // one was reached by somebody — "nobody reached 1h" above their name is false.
     const lines = badge.award
       ? [`**${nameOf(badge.award.user_id)}**`, badge.describe(badge.award)]
       : ['*Unclaimed*', ...(led.length ? [] : [`_${badge.floor ? badge.floorText(badge.floor) : 'nobody qualified'}_`])];
@@ -210,15 +194,8 @@ export function buildSocialBadgesEmbed(awards, {
   //
   // Named rather than counted, but capped: a field value is 1024 characters, and a quiet week on a
   // large server would otherwise drop the whole embed rather than shorten one line.
-  if (caveDwellerRoleName && caveDwellerIds?.length) {
-    const shown = caveDwellerIds.slice(0, CAVE_DWELLERS_NAMED).map(nameOf);
-    const rest = caveDwellerIds.length - shown.length;
-    fields.push({
-      name: `🕳️ ${caveDwellerRoleName}`,
-      value: `**${shown.join('**, **')}**${rest ? ` _and ${rest} more_` : ''}\n_watching from the shadows_`,
-      inline: true,
-    });
-  }
+  const caveField = caveDwellerField(caveDwellerRoleName, caveDwellerIds, nameOf);
+  if (caveField) fields.push(caveField);
 
   if (!fields.length) return null;
   return new EmbedBuilder()
@@ -227,30 +204,62 @@ export function buildSocialBadgesEmbed(awards, {
     .addFields(fields)
     .setFooter({ text: `Held until next ${range.periodNoun}'s recap` });
 }
+/** The Cave Dweller field, or null when the badge is off or nobody new arrived. Shared by the badge
+ *  card and the rest card, since the badge keeps running through a rest period. */
+function caveDwellerField(roleName, userIds, nameOf) {
+  if (!roleName || !userIds?.length) return null;
+  const shown = userIds.slice(0, CAVE_DWELLERS_NAMED).map(nameOf);
+  const rest = userIds.length - shown.length;
+  return {
+    name: `🕳️ ${roleName}`,
+    value: `**${shown.join('**, **')}**${rest ? ` _and ${rest} more_` : ''}\n_watching from the shadows_`,
+    inline: true,
+  };
+}
+
 /**
- * The card for a period nobody earned. Wears the bot's own avatar rather than a member's, since
- * there is no member to show, and stays grey so it never reads as a celebration.
+ * The card for a rest period: no badges were awarded, on purpose, so every member shows their own
+ * rank for a period. Grey like the no-winner card, because nothing was won — but it says why, so
+ * a recap with no names in it does not read as the bot having broken.
+ *
+ * `restPeriods` is BADGE_REST_PERIODS. With one, the period now running is the next one judged, so
+ * the card can say so plainly; with more, it does not try to count down.
  */
-export function buildNoWinnerRecapEmbed(recap, { botAvatarUrl = null, roleName = null, displayNames = new Map() }) {
-  const { range, minSeconds, podium } = recap;
-  // Somebody did clear the bar, but every one of them was sitting out. "Nobody was worthy" would be
-  // false about exactly the members who played the most.
-  const rested = restedLine(recap.rested, displayNames, range.periodNoun);
+export function buildRestPeriodEmbed(range, {
+  botAvatarUrl = null, restPeriods = 1, displayNames = new Map(),
+  caveDwellerRoleName = null, caveDwellerIds = null,
+} = {}) {
+  const nameOf = (userId) => displayNames.get(userId) ?? 'Unknown member';
+  const noun = range.periodNoun;
   const embed = new EmbedBuilder()
     .setColor(RECAP_EMPTY_GREY)
     .setThumbnail(botAvatarUrl)
     .setAuthor({ name: `🏆 ${range.title}` })
-    .setTitle(rested ? `The title rests this ${range.periodNoun}` : 'Nobody was worthy')
-    .setDescription(rested
-      ? `${rested}
+    .setTitle(`🛌 Rest ${noun}`)
+    .setDescription(`No badges this time — everybody wears their own rank for a ${noun}.\n\n`
+      + (restPeriods === 1
+        ? `This ${noun} counts again for everyone: the badges are back at next ${noun}'s recap.`
+        : 'The badges come back once the rest is over, and the count starts fresh for everyone.'));
+  const caveField = caveDwellerField(caveDwellerRoleName, caveDwellerIds, nameOf);
+  if (caveField) embed.addFields(caveField);
+  return embed;
+}
 
-${minSeconds
-        ? `Nobody else managed **${formatPlayTime(minSeconds)}**`
-        : 'Nobody else played anything tracked'}, so the title goes unclaimed.`
-      : minSeconds
-        ? `No one managed **${formatPlayTime(minSeconds)}** of tracked play last ${range.periodNoun}, `
-          + 'so the title goes unclaimed.'
-        : `Nobody played anything tracked last ${range.periodNoun}, so the title goes unclaimed.`);
+/**
+ * The card for a period nobody earned. Wears the bot's own avatar rather than a member's, since
+ * there is no member to show, and stays grey so it never reads as a celebration.
+ */
+export function buildNoWinnerRecapEmbed(recap, { botAvatarUrl = null, roleName = null }) {
+  const { range, minSeconds, podium } = recap;
+  const embed = new EmbedBuilder()
+    .setColor(RECAP_EMPTY_GREY)
+    .setThumbnail(botAvatarUrl)
+    .setAuthor({ name: `🏆 ${range.title}` })
+    .setTitle('Nobody was worthy')
+    .setDescription(minSeconds
+      ? `No one managed **${formatPlayTime(minSeconds)}** of tracked play last ${range.periodNoun}, `
+        + 'so the title goes unclaimed.'
+      : `Nobody played anything tracked last ${range.periodNoun}, so the title goes unclaimed.`);
 
   // Naming the closest attempt gives the week a nudge without pretending it was a win.
   const best = podium[0];

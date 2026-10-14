@@ -185,26 +185,3 @@ test('the caller\'s arrays are not reordered underneath them', () => {
   awardSocialBadges({ voice });
   assert.deepEqual(voice.map((r) => r.user_id), ['bob', 'alice']);
 });
-
-// ---- Sitting out after a badge ---------------------------------------------------------------
-
-test('a member sitting out is passed over on every board but still credited with leading it', () => {
-  const result = awardSocialBadges({
-    championId: 'carol',
-    voice: [row('alice', { voice: 300 }), row('bob', { voice: 120 })],
-    text: [row('alice', { text: 90 }), row('dave', { text: 40 })],
-    restingIds: ['alice'],
-  });
-  assert.equal(holder(result.bard), 'bob');
-  assert.equal(holder(result.scribe), 'dave', 'benched from Bard does not mean free to take Scribe');
-  assert.deepEqual(result.alsoTopped.get('alice'), ['voice', 'text']);
-});
-
-test('a board with only benched members on it goes unclaimed', () => {
-  const result = awardSocialBadges({
-    voice: [row('alice', { voice: 300 })],
-    restingIds: ['alice'],
-  });
-  assert.equal(result.bard, null);
-  assert.deepEqual(result.alsoTopped.get('alice'), ['voice']);
-});
