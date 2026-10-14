@@ -77,6 +77,13 @@ test('an unclaimed badge with no floor set still reads as unclaimed', () => {
   assert.match(field(data, 'Bard').value, /nobody qualified/);
 });
 
+test('an unclaimed badge whose leader was passed over does not claim nobody reached the bar', () => {
+  const data = build({ bard: null, alsoTopped: new Map([['alice', ['voice']]]) });
+  assert.match(field(data, 'Bard').value, /Unclaimed/);
+  assert.match(field(data, 'Bard').value, /Alice led this/);
+  assert.doesNotMatch(field(data, 'Bard').value, /nobody/);
+});
+
 // ---- Passed over -----------------------------------------------------------------------------
 
 test('a passed-over leader is named on the badge they did not get', () => {

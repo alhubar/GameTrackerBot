@@ -43,6 +43,21 @@ export function buildServerAchievementEmbed(tier, guildIconUrl = null) {
     .setDescription(tier.celebration);
 }
 
+/**
+ * The line naming whoever out-played the winner but was sitting out after last period's badge, or
+ * null when nobody was. Anyone `displayNames` cannot name is dropped, the same rule as the podium.
+ * Times are given because without them "sat this one out" reads as an excuse rather than a result.
+ */
+export function restedLine(rested, displayNames, periodNoun) {
+  const named = (rested ?? []).filter((entry) => displayNames.has(entry.userId));
+  if (!named.length) return null;
+  const who = named
+    .map((entry) => `**${displayNames.get(entry.userId)}** (${formatPlayTime(entry.totalSeconds)})`)
+    .join(', ');
+  return `🛌 ${who} played more but sat this one out `
+    + `after wearing a badge last ${periodNoun}.`;
+}
+
 /** 1st, 2nd, 3rd, 4th… with the 11th–13th exceptions English needs and the naive rule gets wrong. */
 export function ordinal(n) {
   const teens = n % 100;
@@ -68,11 +83,12 @@ export function buildRecapEmbed(recap, { displayNames, avatarUrl, roleName = nul
     // No date range: the message's own timestamp already says which week this was.
     .setAuthor({ name: `🏆 ${range.title}` })
     .setTitle(nameOf(winner.userId))
-    .setDescription(`**${formatPlayTime(winner.totalSeconds)}** played across **${winner.gamesPlayed}** `
-      + `${winner.gamesPlayed === 1 ? 'game' : 'different games'} last ${range.periodNoun}.`
-      + (winNumber > 1 ? `
-
-👑 Their **${ordinal(winNumber)} time** taking the title.` : ''));
+    .setDescription([
+      `**${formatPlayTime(winner.totalSeconds)}** played across **${winner.gamesPlayed}** `
+        + `${winner.gamesPlayed === 1 ? 'game' : 'different games'} last ${range.periodNoun}.`,
+      winNumber > 1 ? `👑 Their **${ordinal(winNumber)} time** taking the title.` : null,
+      restedLine(recap.rested, displayNames, range.periodNoun),
+    ].filter(Boolean).join('\n\n'));
 
   if (winner.topGame) {
     embed.addFields({
@@ -174,15 +190,16 @@ export function buildSocialBadgesEmbed(awards, {
   ].filter((badge) => badge.roleName);
 
   const fields = badges.map((badge) => {
+    // Whoever led this board without being given it, so a genuine double winner is not written out.
+    const led = [...(awards.alsoTopped ?? [])]
+      .filter(([userId, boards]) => boards.includes(badge.label) && userId !== badge.award?.user_id)
+      .map(([userId]) => `_${nameOf(userId)} led this_`);
+    // The floor line only when it is true. A badge left unclaimed because its leader already holds
+    // one, or is sitting out, was reached by somebody — "nobody reached 1h" above their name is false.
     const lines = badge.award
       ? [`**${nameOf(badge.award.user_id)}**`, badge.describe(badge.award)]
-      : ['*Unclaimed*', `_${badge.floor ? badge.floorText(badge.floor) : 'nobody qualified'}_`];
-    // Whoever led this board without being given it, so a genuine double winner is not written out.
-    for (const [userId, boards] of awards.alsoTopped ?? []) {
-      if (boards.includes(badge.label) && userId !== badge.award?.user_id) {
-        lines.push(`_${nameOf(userId)} led this_`);
-      }
-    }
+      : ['*Unclaimed*', ...(led.length ? [] : [`_${badge.floor ? badge.floorText(badge.floor) : 'nobody qualified'}_`])];
+    lines.push(...led);
     return { name: `${badge.emoji} ${badge.roleName}`, value: lines.join('\n'), inline: true };
   });
 
@@ -214,17 +231,26 @@ export function buildSocialBadgesEmbed(awards, {
  * The card for a period nobody earned. Wears the bot's own avatar rather than a member's, since
  * there is no member to show, and stays grey so it never reads as a celebration.
  */
-export function buildNoWinnerRecapEmbed(recap, { botAvatarUrl = null, roleName = null }) {
+export function buildNoWinnerRecapEmbed(recap, { botAvatarUrl = null, roleName = null, displayNames = new Map() }) {
   const { range, minSeconds, podium } = recap;
+  // Somebody did clear the bar, but every one of them was sitting out. "Nobody was worthy" would be
+  // false about exactly the members who played the most.
+  const rested = restedLine(recap.rested, displayNames, range.periodNoun);
   const embed = new EmbedBuilder()
     .setColor(RECAP_EMPTY_GREY)
     .setThumbnail(botAvatarUrl)
     .setAuthor({ name: `🏆 ${range.title}` })
-    .setTitle('Nobody was worthy')
-    .setDescription(minSeconds
-      ? `No one managed **${formatPlayTime(minSeconds)}** of tracked play last ${range.periodNoun}, `
-        + 'so the title goes unclaimed.'
-      : `Nobody played anything tracked last ${range.periodNoun}, so the title goes unclaimed.`);
+    .setTitle(rested ? `The title rests this ${range.periodNoun}` : 'Nobody was worthy')
+    .setDescription(rested
+      ? `${rested}
+
+${minSeconds
+        ? `Nobody else managed **${formatPlayTime(minSeconds)}**`
+        : 'Nobody else played anything tracked'}, so the title goes unclaimed.`
+      : minSeconds
+        ? `No one managed **${formatPlayTime(minSeconds)}** of tracked play last ${range.periodNoun}, `
+          + 'so the title goes unclaimed.'
+        : `Nobody played anything tracked last ${range.periodNoun}, so the title goes unclaimed.`);
 
   // Naming the closest attempt gives the week a nudge without pretending it was a win.
   const best = podium[0];

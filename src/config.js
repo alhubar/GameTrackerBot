@@ -97,6 +97,14 @@ if (!Number.isFinite(RECAP_MIN_HOURS) || RECAP_MIN_HOURS < 0) {
 }
 export const RECAP_MIN_SECONDS = Math.round(RECAP_MIN_HOURS * 3600);
 
+// How many periods a badge holder sits out every badge afterwards, so their rank role shows again.
+// Every badge outranks every rank, and on a server where the same few members take all of them
+// each week, nobody would ever see those members' ranks otherwise. 0 switches the bench off.
+export const BADGE_REST_PERIODS = Number(process.env.BADGE_REST_PERIODS ?? '1');
+if (!Number.isInteger(BADGE_REST_PERIODS) || BADGE_REST_PERIODS < 0) {
+  throw new Error(`BADGE_REST_PERIODS must be a whole number of 0 or more — got "${process.env.BADGE_REST_PERIODS}".`);
+}
+
 // Social badges: the weekly awards for members who turn up to talk rather than play. False stops
 // both new event handlers being registered at all, so nothing is recorded and no badge is awarded.
 // Existing rows are left alone — turning it back on resumes where it left off.

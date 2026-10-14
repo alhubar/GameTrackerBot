@@ -1,6 +1,8 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { previousPeriodRange, nextPeriodStart, buildRecap, isRecapDue, markRecapAnnounced, RECAP_PERIODS } from '../src/recap.js';
+import {
+  previousPeriodRange, nextPeriodStart, buildRecap, isRecapDue, markRecapAnnounced, restingMemberIds, RECAP_PERIODS,
+} from '../src/recap.js';
 import { tempDatabase, playSession, HOUR, MINUTE } from './helpers.js';
 
 const GUILD = 'guild-1';
@@ -312,5 +314,86 @@ describe('the posting hour', () => {
     // September opens at 00:00 UTC on the 1st; August's recap waits for hour 18 that day.
     assert.equal(isRecapDue(db, GUILD, at('2026-09-01T06:00:00Z'), 'month', 18), false);
     assert.equal(isRecapDue(db, GUILD, at('2026-09-01T18:00:00Z'), 'month', 18), true);
+  });
+});
+
+describe('sitting out after a badge', () => {
+  // Recapping 3–9 Aug; the week before it is 27 Jul – 2 Aug, and the one before that 20–26 Jul.
+  const TUESDAY = Date.parse('2026-08-11T09:00:00Z');
+  const LAST_WEEK = Date.parse('2026-08-04T18:00:00Z');
+  const range = previousPeriodRange(TUESDAY, 'week');
+  const weekBefore = previousPeriodRange(range.start, 'week');
+  const twoBefore = previousPeriodRange(weekBefore.start, 'week');
+  const wore = (periodKey, badge, userId) =>
+    db.recordRecapWinner({ guildId: GUILD, periodKey, badge, userId }, LAST_WEEK);
+
+  test('every badge worn the period before benches its holder, whichever badge it was', () => {
+    wore(weekBefore.key, 'champion', 'alice');
+    wore(weekBefore.key, 'bard', 'bob');
+    wore(weekBefore.key, 'scribe', 'carol');
+    assert.deepEqual([...restingMemberIds(db, GUILD, range, 1)].sort(), ['alice', 'bob', 'carol']);
+  });
+
+  test('a badge from two periods back has already been sat out', () => {
+    wore(twoBefore.key, 'champion', 'alice');
+    assert.equal(restingMemberIds(db, GUILD, range, 1).size, 0);
+    assert.deepEqual([...restingMemberIds(db, GUILD, range, 2)], ['alice'], 'unless the rest is two periods');
+  });
+
+  test('the period being judged never benches its own winners, so a forced re-run agrees', () => {
+    wore(range.key, 'champion', 'alice');
+    assert.equal(restingMemberIds(db, GUILD, range, 1).size, 0);
+  });
+
+  test('zero periods benches nobody', () => {
+    wore(weekBefore.key, 'champion', 'alice');
+    assert.equal(restingMemberIds(db, GUILD, range, 0).size, 0);
+  });
+
+  test('a benched leader passes the title down and is reported as having sat out', () => {
+    playSession(db, GUILD, 'alice', 'PEAK', LAST_WEEK, 9 * HOUR);
+    playSession(db, GUILD, 'bob', 'PEAK', LAST_WEEK, 5 * HOUR);
+    const recap = buildRecap(db, GUILD, TUESDAY, { minSeconds: 2 * 3600, restingIds: new Set(['alice']) });
+    assert.equal(recap.winner.userId, 'bob');
+    assert.deepEqual(recap.podium.map((entry) => entry.userId), ['bob']);
+    assert.deepEqual(recap.rested.map((entry) => entry.userId), ['alice']);
+  });
+
+  test('the podium still fills when the bench removes rows from the top', () => {
+    for (const [userId, hours] of [['alice', 9], ['bob', 8], ['carol', 7], ['dave', 6], ['erin', 5]]) {
+      playSession(db, GUILD, userId, 'PEAK', LAST_WEEK, hours * HOUR);
+    }
+    const recap = buildRecap(db, GUILD, TUESDAY, { restingIds: new Set(['alice', 'bob']) });
+    assert.deepEqual(recap.podium.map((entry) => entry.userId), ['carol', 'dave', 'erin']);
+  });
+
+  test('a benched member who would not have won is not mentioned', () => {
+    playSession(db, GUILD, 'alice', 'PEAK', LAST_WEEK, 3 * HOUR);
+    playSession(db, GUILD, 'bob', 'PEAK', LAST_WEEK, 5 * HOUR);
+    const recap = buildRecap(db, GUILD, TUESDAY, { restingIds: new Set(['alice']) });
+    assert.equal(recap.winner.userId, 'bob');
+    assert.deepEqual(recap.rested, []);
+  });
+
+  test('when only benched members cleared the bar the title goes unclaimed, and says why', () => {
+    playSession(db, GUILD, 'alice', 'PEAK', LAST_WEEK, 9 * HOUR);
+    playSession(db, GUILD, 'bob', 'PEAK', LAST_WEEK, 30 * MINUTE);
+    const recap = buildRecap(db, GUILD, TUESDAY, { minSeconds: 2 * 3600, restingIds: new Set(['alice']) });
+    assert.equal(recap.winner, null);
+    assert.equal(recap.podium[0].userId, 'bob', 'the closest attempt is still somebody eligible');
+    assert.deepEqual(recap.rested.map((entry) => entry.userId), ['alice']);
+  });
+
+  test('a benched member under the bar is not reported as having sat anything out', () => {
+    playSession(db, GUILD, 'alice', 'PEAK', LAST_WEEK, 30 * MINUTE);
+    const recap = buildRecap(db, GUILD, TUESDAY, { minSeconds: 2 * 3600, restingIds: new Set(['alice']) });
+    assert.deepEqual(recap.rested, []);
+  });
+
+  test('with no bench the recap is unchanged', () => {
+    playSession(db, GUILD, 'alice', 'PEAK', LAST_WEEK, 9 * HOUR);
+    const recap = buildRecap(db, GUILD, TUESDAY);
+    assert.equal(recap.winner.userId, 'alice');
+    assert.deepEqual(recap.rested, []);
   });
 });

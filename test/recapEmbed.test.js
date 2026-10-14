@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 // guaranteed to happen before the graph loads. dotenv leaves an existing value alone, so a real
 // local .env still wins.
 process.env.DISCORD_TOKEN ??= 'test-token';
-const { buildRecapEmbed, ordinal } = await import('../src/embeds.js');
+const { buildRecapEmbed, buildNoWinnerRecapEmbed, ordinal } = await import('../src/embeds.js');
 
 const RANGE = { title: 'Gamer of the Week', periodNoun: 'week' };
 const NAMES = new Map([['alice', 'Alice']]);
@@ -122,5 +122,42 @@ describe('the runners-up field', () => {
     const field = closeBehind(withPodium([...FULL_PODIUM, { userId: 'dan', totalSeconds: 3600 }]));
     assert.equal(field.value.split('\n').length, 2);
     assert.doesNotMatch(field.value, /Dan/);
+  });
+});
+
+describe('a leader sitting out', () => {
+  const NAMED = new Map([['alice', 'Alice'], ['bob', 'Bob']]);
+  const RESTED = [{ userId: 'bob', totalSeconds: 9 * 3600 }];
+
+  test('the winner card names them with their time', () => {
+    const embed = buildRecapEmbed({ ...recap(), rested: RESTED }, { displayNames: NAMED, avatarUrl: null }).data;
+    assert.match(embed.description, /\*\*Bob\*\* \(9h\) played more but sat this one out after wearing a badge last week/);
+    assert.equal(embed.title, 'Alice', 'the card is still about the winner');
+  });
+
+  test('it sits after the win count, not instead of it', () => {
+    const embed = buildRecapEmbed({ ...recap(), rested: RESTED },
+      { displayNames: NAMED, avatarUrl: null, winNumber: 2 }).data;
+    assert.match(embed.description, /2nd time[\s\S]*sat this one out/);
+  });
+
+  test('somebody the caller could not name is dropped', () => {
+    const embed = buildRecapEmbed({ ...recap(), rested: RESTED }, { displayNames: NAMES, avatarUrl: null }).data;
+    assert.doesNotMatch(embed.description, /sat this one out|Unknown member/);
+  });
+
+  test('a period with nobody but benched members over the bar does not say nobody was worthy', () => {
+    const embed = buildNoWinnerRecapEmbed(
+      { range: RANGE, minSeconds: 2 * 3600, podium: [], rested: RESTED },
+      { displayNames: NAMED },
+    ).data;
+    assert.equal(embed.title, 'The title rests this week');
+    assert.match(embed.description, /Bob\*\* \(9h\)/);
+    assert.match(embed.description, /Nobody else managed \*\*2h\*\*/);
+  });
+
+  test('an ordinary empty period is still nobody was worthy', () => {
+    const embed = buildNoWinnerRecapEmbed({ range: RANGE, minSeconds: 2 * 3600, podium: [] }, {}).data;
+    assert.equal(embed.title, 'Nobody was worthy');
   });
 });
