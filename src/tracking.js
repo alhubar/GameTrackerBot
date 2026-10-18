@@ -3,8 +3,9 @@ import { db } from './runtime.js';
 import { memberRef } from './log.js';
 import {
   DEFAULT_ROLE_COLORS, LEVEL_UP_CHANNEL, PAUSE_ON_IDLE,
-  SOCIAL_ENABLED, CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE, UNRANKED_ROLE,
+  SOCIAL_ENABLED, CAVE_DWELLER_ENABLED, CAVE_DWELLER_ROLE, UNRANKED_ROLE, IGNORED_GAMES,
 } from './config.js';
+import { isIgnoredGame } from './gameNames.js';
 import {
   removeRankRoles, removeRoleByName, ensureMembersCached, ensureBadgeRole, UNRANKED_ROLE_COLOR,
 } from './roles.js';
@@ -37,8 +38,12 @@ export const trackerState = {
   presenceUpdates: 0,
 };
 
+// The first Playing activity that is not on IGNORED_GAMES. Skipping past an ignored one, rather
+// than taking the first and then discarding it, is what keeps a real game counted while a CAD
+// viewer is open beside it.
 function playingGame(presence) {
-  return presence?.activities.find((activity) => activity.type === ActivityType.Playing)?.name ?? null;
+  return presence?.activities.find((activity) => activity.type === ActivityType.Playing
+    && !isIgnoredGame(activity.name, IGNORED_GAMES))?.name ?? null;
 }
 
 /**

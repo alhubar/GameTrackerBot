@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { resolve } from 'node:path';
 import { LONGEST_SESSION_ACHIEVEMENT_MS } from './achievements.js';
 import { RECAP_PERIODS } from './recap.js';
+import { parseIgnoredGames } from './gameNames.js';
 
 /**
  * Every `.env`-derived setting, parsed and validated once at import time.
@@ -170,6 +171,11 @@ if (MAX_SESSION_HOURS > 0 && MAX_SESSION_HOURS * HOUR_MS <= LONGEST_SESSION_ACHI
   );
 }
 export const MAX_SESSION_MS = MAX_SESSION_HOURS > 0 ? MAX_SESSION_HOURS * HOUR_MS : 0;
+// Software Discord reports as Playing that is not a game. Comma-separated, each entry a prefix
+// matched on whole words, ignoring case and punctuation. An ignored activity is skipped rather than
+// ending the search, so a real game running alongside it is still the one tracked. Nothing already
+// recorded is touched — /adjust removes past time.
+export const IGNORED_GAMES = parseIgnoredGames(process.env.IGNORED_GAMES?.trim());
 
 // The console-presence spike (issue #5). Logs one line per raw PRESENCE_UPDATE carrying a Playing
 // activity, including the per-activity `platform` field discord.js drops before any handler sees

@@ -219,3 +219,28 @@ export function findDuplicateGameNames(games) {
 
 const byTimeDesc = (a, b) => b.totalSeconds - a.totalSeconds || a.name.localeCompare(b.name);
 const groupSeconds = (suggestion) => suggestion.names.reduce((sum, entry) => sum + entry.totalSeconds, 0);
+
+/**
+ * `IGNORED_GAMES` parsed into the prefixes `isIgnoredGame` compares against.
+ *
+ * Discord reports plenty of desktop software as Playing — a CAD viewer, an editor, a launcher —
+ * and every one of them would otherwise bank hours, ranks and achievements like a game. Each entry
+ * is a **prefix**, so `Autodesk Navisworks` keeps covering next year's `... Freedom 2028` without
+ * anybody editing the list again. Normalised the same way the duplicate sweep is, so case,
+ * punctuation and accents in the `.env` cannot make an entry silently miss. An entry with nothing
+ * left after that is dropped rather than kept as an empty prefix, which would match every game.
+ */
+export function parseIgnoredGames(value) {
+  if (!value) return [];
+  return [...new Set(value.split(',').map((entry) => normalizeGameName(entry).words).filter(Boolean))];
+}
+
+/**
+ * Whether a reported activity name falls under any ignored prefix. The match has to end on a word
+ * boundary, the same rule `EXTENDS` uses: `Port` must not swallow `Portal`.
+ */
+export function isIgnoredGame(name, ignored) {
+  if (!ignored.length || !name) return false;
+  const { words } = normalizeGameName(name);
+  return ignored.some((prefix) => words === prefix || words.startsWith(`${prefix} `));
+}

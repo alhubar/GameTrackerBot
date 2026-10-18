@@ -7,6 +7,10 @@ Tracks time a member is visibly playing a game in Discord, stores it locally, an
 - Discord activities whose type is **Playing** (not streaming, watching, or custom status).
 - Time across all games, including changing from one game to another.
 - One active game at a time per member; if Discord shows several games, the first one is used.
+- **Software that isn't a game can be ignored.** Discord reports some desktop apps as Playing too.
+  List them in `IGNORED_GAMES` (comma-separated prefixes, whole words, case-insensitive) and they are
+  skipped — `Autodesk Navisworks` covers every year's release. A real game open alongside an ignored
+  app is still tracked. Time already recorded stays until removed with `/adjust`.
 - Time is saved every minute and when Discord reports the game has changed/stopped.
 - **Idle time is not counted.** Discord marks a member idle after roughly ten minutes without
   input while still reporting whatever game is open, so a launcher left running overnight would

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DUPLICATE_REASONS, editDistance, findDuplicateGameNames, normalizeGameName, numberSignature,
+  DUPLICATE_REASONS, editDistance, findDuplicateGameNames, isIgnoredGame, normalizeGameName, numberSignature,
+  parseIgnoredGames,
 } from '../src/gameNames.js';
 import { tempDatabase, playSession, HOUR, MINUTE, T0 } from './helpers.js';
 
@@ -209,4 +210,25 @@ test('a precomputed signature still rejects a sequel and still allows a typo', (
     named(find(game('Diablo III', 10), game('DiabIo III', 1))),
     [[DUPLICATE_REASONS.NEAR, 'Diablo III', 'DiabIo III']],
   );
+});
+
+test('IGNORED_GAMES entries are normalised, deduplicated, and blanks dropped', () => {
+  assert.deepEqual(parseIgnoredGames(undefined), []);
+  assert.deepEqual(parseIgnoredGames(' Autodesk  Navisworks , autodesk navisworks,, !!! ,Wallpaper Engine'), ['autodesk navisworks', 'wallpaper engine']);
+});
+
+test('an ignored entry matches as a whole-word prefix, ignoring case and punctuation', () => {
+  const ignored = parseIgnoredGames('Autodesk Navisworks,Port');
+  assert.ok(isIgnoredGame('Autodesk Navisworks Freedom 2027', ignored));
+  assert.ok(isIgnoredGame('AUTODESK NAVISWORKS', ignored));
+  assert.ok(isIgnoredGame('Autodesk-Navisworks Freedom 2028', ignored));
+  assert.ok(isIgnoredGame('Port', ignored));
+  // A prefix has to end where a word does — `Port` is not the start of `Portal`.
+  assert.ok(!isIgnoredGame('Portal 2', ignored));
+  assert.ok(!isIgnoredGame('Autodesk', ignored));
+  assert.ok(!isIgnoredGame('Elden Ring', ignored));
+});
+
+test('an empty ignore list ignores nothing', () => {
+  assert.ok(!isIgnoredGame('Autodesk Navisworks Freedom 2027', []));
 });
