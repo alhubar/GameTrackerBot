@@ -38,8 +38,8 @@ describe('parseEventTime — timezone conversion', () => {
 
 describe('parseEventTime — validation', () => {
   const cases = [
-    ['free-form text', 'tomorrow at 8pm'],
-    ['wrong separator', '22/08/2026 20:00'],
+    ['free-form text', 'sometime next month'],
+    ['am/pm with hour 13', 'tomorrow 13pm'],
     ['missing time', '22-08-2026'],
     ['month 00', '22-00-2026 20:00'],
     ['month 13', '22-13-2026 20:00'],
@@ -69,6 +69,54 @@ describe('parseEventTime — validation', () => {
     const { error, utcMs } = parseEventTime('  22-08-2026 20:00  ', 'UTC');
     assert.equal(error, undefined);
     assert.equal(utcMs, Date.UTC(2026, 7, 22, 20, 0));
+  });
+});
+
+describe('parseEventTime — short forms', () => {
+  // Wednesday 2026-10-21 12:00 UTC
+  const now = Date.UTC(2026, 9, 21, 12, 0);
+  const at = (text, zone = 'UTC') => parseEventTime(text, zone, now);
+
+  test('other separators and a two-digit year', () => {
+    assert.equal(at('22/08/2027 20:00').utcMs, Date.UTC(2027, 7, 22, 20, 0));
+    assert.equal(at('22.08.27 20:00').utcMs, Date.UTC(2027, 7, 22, 20, 0));
+    assert.equal(at('2027-08-22 20:00').utcMs, Date.UTC(2027, 7, 22, 20, 0));
+  });
+
+  test('a missing year means the next time that date comes round', () => {
+    assert.equal(at('25-10 20:00').utcMs, Date.UTC(2026, 9, 25, 20, 0));
+    assert.equal(at('05-01 20:00').utcMs, Date.UTC(2027, 0, 5, 20, 0));
+  });
+
+  test('time forms', () => {
+    assert.equal(at('25-10 20').utcMs, Date.UTC(2026, 9, 25, 20, 0));
+    assert.equal(at('25-10 20.30').utcMs, Date.UTC(2026, 9, 25, 20, 30));
+    assert.equal(at('25-10 8pm').utcMs, Date.UTC(2026, 9, 25, 20, 0));
+    assert.equal(at('25-10 8:30 pm').utcMs, Date.UTC(2026, 9, 25, 20, 30));
+    assert.equal(at('25-10 12am').utcMs, Date.UTC(2026, 9, 25, 0, 0));
+    assert.equal(at('25-10 12pm').utcMs, Date.UTC(2026, 9, 25, 12, 0));
+  });
+
+  test('today and tomorrow', () => {
+    assert.equal(at('today 20:00').utcMs, Date.UTC(2026, 9, 21, 20, 0));
+    assert.equal(at('tomorrow at 8pm').utcMs, Date.UTC(2026, 9, 22, 20, 0));
+  });
+
+  test('today and tomorrow are read in the event zone, not UTC', () => {
+    // 23:00 UTC on the 21st is already the 22nd in Tokyo.
+    const late = Date.UTC(2026, 9, 21, 23, 0);
+    assert.equal(parseEventTime('today 20:00', 'Asia/Tokyo', late).utcMs, Date.UTC(2026, 9, 22, 11, 0));
+  });
+
+  test('weekday names pick the next one', () => {
+    assert.equal(at('fri 20:00').utcMs, Date.UTC(2026, 9, 23, 20, 0));
+    assert.equal(at('next Saturday 20:00').utcMs, Date.UTC(2026, 9, 24, 20, 0));
+    assert.equal(at('mon 20:00').utcMs, Date.UTC(2026, 9, 26, 20, 0));
+  });
+
+  test('the current weekday means tonight if still ahead, otherwise next week', () => {
+    assert.equal(at('wed 20:00').utcMs, Date.UTC(2026, 9, 21, 20, 0));
+    assert.equal(at('wed 09:00').utcMs, Date.UTC(2026, 9, 28, 9, 0));
   });
 });
 

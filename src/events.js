@@ -1,4 +1,9 @@
-const DATE_TIME_PATTERN = /^(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2})$/;
+const TIME_AT_END = /(?:^|\s)(?:at\s+)?(\d{1,2})(?:[:.h](\d{2}))?\s*(am|pm)?$/;
+const NUMERIC_DATE = /^(\d{1,2})[-./](\d{1,2})(?:[-./](\d{4}|\d{2}))?$/;
+const ISO_DATE = /^(\d{4})-(\d{1,2})-(\d{1,2})$/;
+const WEEKDAY = /^(?:next\s+)?(sun|mon|tue|wed|thu|fri|sat)[a-z]*$/;
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const FORMAT_HINT = 'Try `22-08 20:00`, `tomorrow 8pm` or `fri 20:00`.';
 
 /** Converts a wall-clock date/time in the given IANA zone to a UTC epoch ms instant. */
 export function zonedTimeToUtc(year, month, day, hour, minute, timeZone) {
@@ -16,27 +21,86 @@ export function zonedTimeToUtc(year, month, day, hour, minute, timeZone) {
   return guessUtc - offset;
 }
 
-/** Parses "DD-MM-YYYY HH:mm" in the given IANA zone. Returns { utcMs } or { error }. */
-export function parseEventTime(text, timeZone) {
-  const match = DATE_TIME_PATTERN.exec(text.trim());
-  if (!match) return { error: 'Use the format DD-MM-YYYY HH:mm, e.g. 22-08-2026 20:00.' };
-  const [, dayStr, monthStr, yearStr, hourStr, minuteStr] = match;
-  const day = Number(dayStr);
-  const month = Number(monthStr);
-  const year = Number(yearStr);
-  const hour = Number(hourStr);
-  const minute = Number(minuteStr);
-  if (month < 1 || month > 12) return { error: 'Month must be between 01 and 12.' };
-  if (day < 1 || day > 31) return { error: 'Day must be between 01 and 31.' };
+/** The calendar date `ms` falls on in `timeZone`, as { year, month, day }. */
+function localDate(ms, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .formatToParts(new Date(ms)).map((part) => [part.type, part.value]),
+  );
+  return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day) };
+}
+
+/**
+ * Parses a start time in the given IANA zone. Returns { utcMs } or { error }.
+ *
+ * The canonical form is "DD-MM-YYYY HH:mm" (what the edit form pre-fills), but it is the hard way to
+ * type, so the date also takes: `.` `/` or `-` separators, a missing or two-digit year (a missing
+ * year means the next time that date comes round), `YYYY-MM-DD`, `today`, `tomorrow`, and a weekday
+ * name (`fri`, `next friday` — the next one, never today's). The time takes `20:00`, `20.00`, `20`,
+ * `8pm` and `8:30pm`. `now` is a parameter, like everywhere else, so tests can pin the clock.
+ */
+export function parseEventTime(text, timeZone, now = Date.now()) {
+  const input = text.trim().toLowerCase();
+  const timeMatch = TIME_AT_END.exec(input);
+  if (!timeMatch) return { error: `Could not read a time. ${FORMAT_HINT}` };
+  const datePart = input.slice(0, timeMatch.index).trim().replace(/\s+at$/, '');
+  if (!datePart) return { error: `Could not read a day. ${FORMAT_HINT}` };
+
+  let hour = Number(timeMatch[1]);
+  const minute = timeMatch[2] === undefined ? 0 : Number(timeMatch[2]);
+  const meridiem = timeMatch[3];
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return { error: 'With am/pm the hour must be between 1 and 12.' };
+    hour = (hour % 12) + (meridiem === 'pm' ? 12 : 0);
+  }
   if (hour > 23 || minute > 59) return { error: 'Time must be a valid 24-hour HH:mm.' };
 
-  const utcMs = zonedTimeToUtc(year, month, day, hour, minute, timeZone);
+  const today = localDate(now, timeZone);
+  let year;
+  let month;
+  let day;
+  let yearOmitted = false;
+  let weekdayIndex = null;
+  let numeric;
+  let iso;
+  if (datePart === 'today') {
+    ({ year, month, day } = today);
+  } else if (datePart === 'tomorrow') {
+    const next = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+    year = next.getUTCFullYear(); month = next.getUTCMonth() + 1; day = next.getUTCDate();
+  } else if (WEEKDAY.test(datePart)) {
+    weekdayIndex = WEEKDAYS.indexOf(WEEKDAY.exec(datePart)[1]);
+  } else if ((iso = ISO_DATE.exec(datePart))) {
+    year = Number(iso[1]); month = Number(iso[2]); day = Number(iso[3]);
+  } else if ((numeric = NUMERIC_DATE.exec(datePart))) {
+    day = Number(numeric[1]); month = Number(numeric[2]);
+    if (numeric[3] === undefined) { yearOmitted = true; year = today.year; }
+    else year = numeric[3].length === 2 ? 2000 + Number(numeric[3]) : Number(numeric[3]);
+  } else {
+    return { error: `Could not read the day. ${FORMAT_HINT}` };
+  }
 
-  const check = Object.fromEntries(
-    new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
-      .formatToParts(new Date(utcMs)).map((part) => [part.type, part.value]),
-  );
-  if (Number(check.year) !== year || Number(check.month) !== month || Number(check.day) !== day) {
+  if (weekdayIndex !== null) {
+    const todayIndex = new Date(Date.UTC(today.year, today.month - 1, today.day)).getUTCDay();
+    let ahead = (weekdayIndex - todayIndex + 7) % 7;
+    // "fri" typed on a Friday means next Friday unless tonight's slot is still to come.
+    if (ahead === 0 && zonedTimeToUtc(today.year, today.month, today.day, hour, minute, timeZone) <= now) ahead = 7;
+    const target = new Date(Date.UTC(today.year, today.month - 1, today.day + ahead));
+    year = target.getUTCFullYear(); month = target.getUTCMonth() + 1; day = target.getUTCDate();
+  }
+
+  if (month < 1 || month > 12) return { error: 'Month must be between 01 and 12.' };
+  if (day < 1 || day > 31) return { error: 'Day must be between 01 and 31.' };
+
+  let utcMs = zonedTimeToUtc(year, month, day, hour, minute, timeZone);
+  // No year given and that date has already passed this year: they mean the coming one.
+  if (yearOmitted && utcMs <= now) {
+    year += 1;
+    utcMs = zonedTimeToUtc(year, month, day, hour, minute, timeZone);
+  }
+
+  const check = localDate(utcMs, timeZone);
+  if (check.year !== year || check.month !== month || check.day !== day) {
     return { error: 'That is not a valid calendar date.' };
   }
   return { utcMs };

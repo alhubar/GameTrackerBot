@@ -34,6 +34,9 @@ export function buildEventEmbed(event, signups) {
     .setTitle(event.title)
     .addFields({ name: '🗓️ When', value: `<t:${unixSeconds}:F>\n<t:${unixSeconds}:R>`, inline: true });
   if (event.description) embed.setDescription(event.description);
+  // A mention renders as the creator's name without pinging anyone. Second, so the row reads
+  // When / Host / Game, and a repeating event spills Repeats onto a row of its own.
+  if (event.creator_id && event.creator_id !== '0') embed.addFields({ name: '🎙️ Host', value: `<@${event.creator_id}>`, inline: true });
   if (event.game_name) embed.addFields({ name: '🎮 Game', value: event.game_name, inline: true });
   // Third in the inline row, so When / Game / Repeats fills it exactly. Shown at all only when the
   // event repeats: every event ever created before this existed is a one-off, and saying so on all
@@ -126,8 +129,8 @@ export function buildEventModal(customId, title, timezoneLabel, values = {}) {
         .setValue(values.title ?? '').setRequired(true),
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('at').setLabel(`Start (DD-MM-YYYY HH:mm), ${timezoneLabel}`).setStyle(TextInputStyle.Short)
-        .setValue(values.at ?? '').setRequired(true),
+      new TextInputBuilder().setCustomId('at').setLabel(`Start, ${timezoneLabel}`).setStyle(TextInputStyle.Short)
+        .setPlaceholder('22-08 20:00 · tomorrow 8pm · fri 20:00').setValue(values.at ?? '').setRequired(true),
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder().setCustomId('game').setLabel('Game (optional)').setStyle(TextInputStyle.Short)
